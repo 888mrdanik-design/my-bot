@@ -71,3 +71,6 @@ async def handle_text(message: types.Message):
 
 if __name__ == "__main__":
     asyncio.run(main())
+except Exception as e:
+    logging.error(f"Критическая Ошибка При Запуске: {e}")
+    raise e
