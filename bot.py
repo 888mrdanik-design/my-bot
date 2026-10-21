@@ -21,7 +21,7 @@ SYSTEM_PROMPT = (
     "Сохраняй смысл, убирай воду, делай текст чётким и лаконичным. Отвечай только готовым текстом."
 )
 async def hangle(request):
-  return.web.Response(text="Bot is running!")
+  return web.Response(text="Bot is running!")
 async def start_web_server():
   app = web.Application()
   app.router.add_get('/', handle)
