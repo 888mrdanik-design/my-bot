@@ -61,7 +61,7 @@ async def handle_text(message: types.Message):
         logging.error(f"Ошибка: {e}")
         await message.reply("Ошибка при обработке текста. Попробуй позже.")
       
-      async def main():
+    async def main():
         logging.basicConfig(Level=logging.INFO)
         print("Запускаем веб-сервер для Render...")
         await start_web_server()
