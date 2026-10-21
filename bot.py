@@ -5,6 +5,7 @@ import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from groq import AsyncGroq
+from aiohttp import web
 
 # --- НАСТРОЙКИ ---
 TELEGRAM_TOKEN = ""
@@ -19,6 +20,16 @@ SYSTEM_PROMPT = (
     "Ты — профессиональный редактор. Сокращай и редактируй текст, который присылает пользователь. "
     "Сохраняй смысл, убирай воду, делай текст чётким и лаконичным. Отвечай только готовым текстом."
 )
+async def hangle(request):
+  return.web.Response(text="Bot is running!")
+async def start_web_server():
+  app = web.Application()
+  app.router.add_get('/', handle)
+  runner = web.AppRunner(app)
+  await runner.setup()
+  port = int(os.environ.get("PORT", 8080))
+  site = web.TCPSite(runner, '0.0.0.0', port)
+  await site.start()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -49,9 +60,12 @@ async def handle_text(message: types.Message):
     except Exception as e:
         logging.error(f"Ошибка: {e}")
         await message.reply("Ошибка при обработке текста. Попробуй позже.")
+      
+      async def main():
+        logging.basicConfig(Level=logging.INFO)
+        print("Запускаем веб-сервер для Render...")
+        await start_web_server()
 
-async def main():
-    logging.basicConfig(level=logging.INFO)
     print("Бот запущен (на Groq)...")
     await dp.start_polling(bot)
 
