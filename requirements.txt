@@ -1,2 +1,2 @@
-airogram
+airogram==3.15.0
 groq
