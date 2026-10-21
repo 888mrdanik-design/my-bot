@@ -1,17 +1,19 @@
 import asyncio
 import logging
+import os
+import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from groq import AsyncGroq
 
 # --- НАСТРОЙКИ ---
-TELEGRAM_TOKEN = "8837837246:AAFW04QERmSDn7-cAG7ALMhNvVGlHIOb-Pw"
+TELEGRAM_TOKEN = ""
 GROQ_API_KEY = ""
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-client = AsyncGroq(api_key=GROQ_API_KEY)
+client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False)
 
 SYSTEM_PROMPT = (
     "Ты — профессиональный редактор. Сокращай и редактируй текст, который присылает пользователь. "
