@@ -13,8 +13,8 @@ GROQ_API_KEY = ""
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False)
-
+client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False))
+                  
 SYSTEM_PROMPT = (
     "Ты — профессиональный редактор. Сокращай и редактируй текст, который присылает пользователь. "
     "Сохраняй смысл, убирай воду, делай текст чётким и лаконичным. Отвечай только готовым текстом."
