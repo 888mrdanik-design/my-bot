@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from groq import AsyncGroq
 
 # --- НАСТРОЙКИ ---
-TELEGRAM_TOKEN = "8837837246:AAFW04QERmSDn7-cAG7ALMhNvVGlHIOb-Pw"
+TELEGRAM_TOKEN = ""
 GROQ_API_KEY = ""
 
 bot = Bot(token=TELEGRAM_TOKEN)
