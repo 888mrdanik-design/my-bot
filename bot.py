@@ -5,11 +5,24 @@ import httpx
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from groq import AsyncGroq
-from aiohttp import web
 
 # --- НАСТРОЙКИ ---
-TELEGRAM_TOKEN = ""
-GROQ_API_KEY = ""
+TELEGRAM_TOKEN = os.environ.get
+GROQ_API_KEY = os.environ.get
+
+logging.basikConfig(level=logging.INFO)
+if TELEGRAM_TOKEN:
+  logging.info(f"Токен получен , начинается с:
+  {TELEGRAM_TOKEN[:10]}...")
+else:
+    logging.error("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_TOKEN ПУСТОЙ!")
+if GROQ_API_KEY:
+    logging.info(f"Ключ Groq получен, начинается с: {GROQ_API_KEY[:10]}...")
+else:
+  logging.error("КРИТИЧЕСКАЯ ОШИБКА: GROQ_API_KEY ПУСТОЙ!")
+
+if not TELEGRAM_TOKEN or not GROQ_API_KEY:
+  exit(1)
 
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
@@ -20,16 +33,6 @@ SYSTEM_PROMPT = (
     "Ты — профессиональный редактор. Сокращай и редактируй текст, который присылает пользователь. "
     "Сохраняй смысл, убирай воду, делай текст чётким и лаконичным. Отвечай только готовым текстом."
 )
-async def hangle(request):
-  return web.Response(text="Bot is running!")
-async def start_web_server():
-  app = web.Application()
-  app.router.add_get('/', handle)
-  runner = web.AppRunner(app)
-  await runner.setup()
-  port = int(os.environ.get("PORT", 8080))
-  site = web.TCPSite(runner, '0.0.0.0', port)
-  await site.start()
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -53,9 +56,9 @@ async def handle_text(message: types.Message):
             temperature=0.3,
             max_tokens=1500
         )
-        
+      await
         result_text = response.choices[0].message.content
-        await message.reply(result_text)
+)
 
     except Exception as e:
         logging.error(f"Ошибка: {e}")
@@ -66,7 +69,7 @@ async def handle_text(message: types.Message):
         print("Запускаем веб-сервер для Render...")
         await start_web_server()
 
-    print("Бот запущен (на Groq)...")
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
