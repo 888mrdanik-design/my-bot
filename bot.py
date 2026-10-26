@@ -3,12 +3,12 @@ import logging
 import os
 import base64
 import httpx
-from aiogram import Bot, Dispatcher, types, F  # Добавлен F для фильтров
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from groq import AsyncGroq
 from aiohttp import web
 
-# Получаем ключи из настроек Render
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
@@ -18,15 +18,12 @@ if not TELEGRAM_TOKEN or not GROQ_API_KEY:
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Клиент Groq с отключенной проверкой SSL (чтобы Render не блокировал)
 client = AsyncGroq(
     api_key=GROQ_API_KEY,
     http_client=httpx.AsyncClient(verify=False)
 )
 
-SYSTEM_PROMPT = "Ты — умный ассистент. Отвечай на вопросы пользователя, анализируя текст и изображения. Если на фото есть текст, можешь его прочитать, переписать или сократить по просьбе."
-
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (чтобы не засыпал) ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -39,31 +36,68 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ОБРАБОТЧИК КОМАНДЫ /START ---
+# --- КНОПКИ МЕНЮ ---
+def get_main_keyboard():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="📝 Работа с текстом/фото")
+    builder.button(text="🤖 Задать вопрос")
+    builder.adjust(2)
+    return builder.as_markup(resize_keyboard=True)
+
+# Словарь для запоминания режима пользователя
+user_modes = {}
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Отправь мне текст или фотографию, и я помогу с ним разобраться. Если отправляешь фото, напиши в подписи, что нужно сделать.")
+    await message.answer(
+        "Привет! Выбери режим работы, нажав на кнопку внизу 👇",
+        reply_markup=get_main_keyboard()
+    )
 
-# --- ОБРАБОТЧИК ТЕКСТА ---
+# --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ---
+@dp.message(F.text == "📝 Работа с текстом/фото")
+async def mode_text(message: types.Message):
+    user_modes[message.from_user.id] = "text"
+    await message.answer("Режим редактора. Отправь текст или фото, и я обработаю.", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == "🤖 Задать вопрос")
+async def mode_question(message: types.Message):
+    user_modes[message.from_user.id] = "question"
+    await message.answer("Режим вопросов. Напиши свой вопрос, и я отвечу.", reply_markup=get_main_keyboard())
+
+# --- ОБРАБОТКА ТЕКСТА ---
 @dp.message(F.text)
 async def handle_text(message: types.Message):
+    # Игнорируем нажатия на кнопки меню
+    if message.text in ["📝 Работа с текстом/фото", "🤖 Задать вопрос"]:
+        return
+
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    mode = user_modes.get(message.from_user.id, "text")
+
+    if mode == "question":
+        sys_prompt = "Ты — умный ассистент. Отвечай на вопрос пользователя точно, по делу, без лишней воды."
+        temp = 0.5
+    else:
+        sys_prompt = "Ты — профессиональный редактор. Сокращай и редактируй текст. Отвечай только готовым текстом."
+        temp = 0.3
+
     try:
         response = await client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="openai/gpt-oss-20b", # Текстовая модель
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": message.text}
             ],
-            temperature=0.3, 
+            temperature=temp, 
             max_tokens=1500
         )
         await message.reply(response.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Ошибка при обработке текста: {e}")
-        await message.reply("Ошибка при обработке текста. Попробуй позже.")
+        logging.error(f"Ошибка текста: {e}")
+        await message.reply("Ошибка при обработке текста.")
 
-# --- ОБРАБОТЧИК ФОТО (ИСПРАВЛЕН) ---
+# --- ОБРАБОТКА ФОТО (ИСПРАВЛЕНО) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
@@ -71,19 +105,21 @@ async def handle_photo(message: types.Message):
     # Берем фото в максимальном качестве
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
+    
+    # Скачиваем файл в память (без сохранения на диск)
     downloaded_file = await bot.download_file(file_info.file_path)
     
-    # Переводим картинку в base64
+    # Переводим в base64
     image_bytes = downloaded_file.read()
     base64_image = base64.b64encode(image_bytes).decode('utf-8')
     
-    # Вопрос пользователя (подпись к фото, если есть, иначе стандартный)
+    # Вопрос из подписи к фото или стандартный
     user_question = message.caption if message.caption else "Что на этой фотографии? Если есть текст, прочитай его."
     
     try:
-        # Используем мультимодальную модель
+        # Используем мультимодальную модель Qwen
         response = await client.chat.completions.create(
-            model="meta-llama/llama-4-maverick-17b-128e-instruct",
+            model="qwen/qwen3.8-27b", 
             messages=[
                 {
                     "role": "user",
@@ -101,17 +137,18 @@ async def handle_photo(message: types.Message):
         )
         await message.reply(response.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Ошибка при обработке фото: {e}")
-        await message.reply("Не удалось обработать фото. Возможно, оно слишком большое или модель временно недоступна.")
+        logging.error(f"Ошибка фото: {e}")
+        await message.reply("Не удалось обработать фото. Убедись, что оно меньше 20 МБ, или попробуй позже.")
 
 # --- ЗАПУСК ---
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("Запускаем веб-сервер...")
     await start_web_server()
-    
     print("Бот запущен...")
     await dp.start_polling(bot)
+
+if _name_ == "_main_":
+    asyncio.run(main())
 
 if __name__ == "__main__":
     asyncio.run(main())
