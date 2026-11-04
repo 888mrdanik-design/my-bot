@@ -6,7 +6,7 @@ import httpx
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from aiogram.types import FSInputFile, BufferedInputFile
+from aiogram.types import BufferedInputFile  # Важно: используем BufferedInputFile для картинок из памяти
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 from groq import AsyncGroq
 from aiohttp import web
@@ -42,7 +42,7 @@ def get_main_keyboard():
     builder.button(text="🤖 Задать вопрос")
     builder.button(text="🎨 Фильтры для фото")
     builder.button(text="📊 Презентация")
-    builder.adjust(2, 2) # Кнопки в два ряда по две
+    builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 def get_filters_keyboard():
@@ -82,7 +82,7 @@ async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
     await message.answer("Напиши мне тему презентации (например: 'История космоса'), и я сделаю файл PowerPoint!", reply_markup=get_main_keyboard())
 
-# --- ОБРАБОТКА ФИЛЬТРОВ ---
+# --- ОБРАБОТКА ВЫБОРА ФИЛЬТРА ---
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
     filter_type = callback.data.split("_")[1]
@@ -139,6 +139,7 @@ async def handle_text(message: types.Message):
             prs.save(pptx_stream)
             pptx_stream.seek(0)
             
+            # Отправляем файл PPTX
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
             await message.reply_document(document, caption="Твоя презентация готова! 🎉")
             
@@ -149,7 +150,7 @@ async def handle_text(message: types.Message):
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- ОСТАЛЬНЫЕ РЕЖИМЫ ---
+    # --- ОСТАЛЬНЫЕ ТЕКСТОВЫЕ РЕЖИМЫ ---
     if mode == "question":
         sys_prompt = "Ты — умный ассистент. Отвечай на вопрос пользователя точно, по делу."
         temp = 0.5
@@ -168,7 +169,7 @@ async def handle_text(message: types.Message):
         logging.error(f"Ошибка текста: {e}")
         await message.reply("Ошибка при обработке.")
 
-# --- ОБРАБОТКА ФОТО ---
+# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     mode = user_modes.get(message.from_user.id, "")
@@ -180,11 +181,16 @@ async def handle_photo(message: types.Message):
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     downloaded_file = await bot.download_file(file_info.file_path)
+    
+    # Открываем фото в память
     image = Image.open(io.BytesIO(downloaded_file.read()))
     
+    # Применяем выбранный фильтр
     filter_type = mode.split("_")[1]
-    if filter_type == "bw": image = ImageOps.grayscale(image)
-    elif filter_type == "blur": image = image.filter(ImageFilter.GaussianBlur(radius=5))
+    if filter_type == "bw": 
+        image = ImageOps.grayscale(image)
+    elif filter_type == "blur": 
+        image = image.filter(ImageFilter.GaussianBlur(radius=5))
     elif filter_type == "vintage":
         image = ImageOps.grayscale(image)
         image = ImageOps.colorize(image, black="#2c1b18", white="#e0c9a6")
@@ -192,12 +198,20 @@ async def handle_photo(message: types.Message):
         enhancer = ImageEnhance.Contrast(image)
         image = enhancer.enhance(2.0)
 
+    # Сохраняем результат в память
     output = io.BytesIO()
     image.save(output, format='JPEG')
     output.seek(0)
-    await message.reply_photo(photo=FSInputFile(output, filename="result.jpg"), caption="Готово!")
+    
+    # ОТПРАВЛЯЕМ ФОТО ЧЕРЕЗ BufferedInputFile (исправлено!)
+    await message.reply_photo(
+        photo=BufferedInputFile(output.read(), filename="result.jpg"), 
+        caption="Готово!"
+    )
+    
     user_modes[message.from_user.id] = "text"
 
+# --- ЗАПУСК ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     await start_web_server()
