@@ -3,3 +3,4 @@ groq
 httpx
 aiohttp
 Pillow
+python-pptx
