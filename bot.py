@@ -15,7 +15,7 @@ from pptx import Presentation
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-CHANNEL_ID = "@DDM_AI" 
+CHANNEL_ID = "@DDM" 
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     exit(1)
