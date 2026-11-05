@@ -6,7 +6,7 @@ import httpx
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from aiogram.types import BufferedInputFile  # Важно: используем BufferedInputFile для картинок из памяти
+from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 from groq import AsyncGroq
 from aiohttp import web
@@ -14,6 +14,8 @@ from pptx import Presentation
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+CHANNEL_ID = "@DDM" 
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     exit(1)
@@ -35,6 +37,16 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ---
+async def is_subscribed(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        # Пользователь считается подписанным, если он участник, админ или создатель
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logging.error(f"Ошибка проверки подписки: {e}")
+        return False
+
 # --- КЛАВИАТУРЫ ---
 def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
@@ -44,6 +56,14 @@ def get_main_keyboard():
     builder.button(text="📊 Презентация")
     builder.adjust(2, 2)
     return builder.as_markup(resize_keyboard=True)
+
+def get_subscribe_keyboard():
+    # Кнопка со ссылкой на канал и кнопка проверки
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")
+    builder.button(text="✅ Я подписался", callback_data="check_sub")
+    builder.adjust(1)
+    return builder.as_markup()
 
 def get_filters_keyboard():
     builder = InlineKeyboardBuilder()
@@ -56,10 +76,27 @@ def get_filters_keyboard():
 
 user_modes = {}
 
-# --- КОМАНДА /START ---
+# --- КОМАНДА /START С ПРОВЕРКОЙ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer("Привет! Выбери, что будем делать 👇", reply_markup=get_main_keyboard())
+    if await is_subscribed(message.from_user.id):
+        await message.answer("Привет! Выбери, что будем делать 👇", reply_markup=get_main_keyboard())
+    else:
+        await message.answer(
+            "Чтобы пользоваться ботом, подпишись на наш канал! 👇",
+            reply_markup=get_subscribe_keyboard()
+        )
+
+# --- ОБРАБОТКА КНОПКИ "Я ПОДПИСАЛСЯ" ---
+@dp.callback_query(F.data == "check_sub")
+async def check_subscription(callback: types.CallbackQuery):
+    if await is_subscribed(callback.from_user.id):
+        await callback.message.delete() # Удаляем сообщение с кнопками
+        await callback.message.answer("Спасибо за подписку! Теперь выбери, что будем делать 👇", reply_markup=get_main_keyboard())
+    else:
+        await callback.answer("Вы еще не подписались на канал!", show_alert=True)
+        # Можно обновить клавиатуру, чтобы кнопка "Подписаться" осталась
+        await callback.message.edit_reply_markup(reply_markup=get_subscribe_keyboard())
 
 # --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ---
 @dp.message(F.text == "📝 Работа с текстом")
@@ -96,10 +133,14 @@ async def handle_text(message: types.Message):
     if message.text in ["📝 Работа с текстом", "🤖 Задать вопрос", "🎨 Фильтры для фото", "📊 Презентация"]:
         return
 
+    # Проверяем подписку перед каждым запросом (на случай, если отписался)
+    if not await is_subscribed(message.from_user.id):
+        await message.answer("Ты отписался от канала. Подпишись снова, чтобы продолжить.", reply_markup=get_subscribe_keyboard())
+        return
+
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     mode = user_modes.get(message.from_user.id, "text")
 
-    # --- РЕЖИМ ПРЕЗЕНТАЦИИ ---
     if mode == "presentation":
         await message.answer("Генерирую структуру и создаю файл... Это займет несколько секунд.")
         sys_prompt = (
@@ -126,31 +167,24 @@ async def handle_text(message: types.Message):
                     if len(parts) >= 3:
                         slide_title = parts[1].strip()
                         slide_text = parts[2].strip()
-                        
                         slide_layout = prs.slide_layouts[1]
                         slide = prs.slides.add_slide(slide_layout)
                         title = slide.shapes.title
                         subtitle = slide.placeholders[1]
-                        
                         title.text = slide_title
                         subtitle.text = slide_text
             
             pptx_stream = io.BytesIO()
             prs.save(pptx_stream)
             pptx_stream.seek(0)
-            
-            # Отправляем файл PPTX
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
             await message.reply_document(document, caption="Твоя презентация готова! 🎉")
-            
         except Exception as e:
             logging.error(f"Ошибка презентации: {e}")
             await message.reply("Не удалось создать презентацию. Попробуй другую тему.")
-        
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- ОСТАЛЬНЫЕ ТЕКСТОВЫЕ РЕЖИМЫ ---
     if mode == "question":
         sys_prompt = "Ты — умный ассистент. Отвечай на вопрос пользователя точно, по делу."
         temp = 0.5
@@ -169,9 +203,13 @@ async def handle_text(message: types.Message):
         logging.error(f"Ошибка текста: {e}")
         await message.reply("Ошибка при обработке.")
 
-# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
+# --- ОБРАБОТКА ФОТО ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
+    if not await is_subscribed(message.from_user.id):
+        await message.answer("Подпишись на канал, чтобы использовать фильтры.", reply_markup=get_subscribe_keyboard())
+        return
+
     mode = user_modes.get(message.from_user.id, "")
     if not mode.startswith("filter_"):
         await message.reply("Выбери фильтр в меню '🎨 Фильтры для фото'!")
@@ -181,16 +219,11 @@ async def handle_photo(message: types.Message):
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     downloaded_file = await bot.download_file(file_info.file_path)
-    
-    # Открываем фото в память
     image = Image.open(io.BytesIO(downloaded_file.read()))
     
-    # Применяем выбранный фильтр
     filter_type = mode.split("_")[1]
-    if filter_type == "bw": 
-        image = ImageOps.grayscale(image)
-    elif filter_type == "blur": 
-        image = image.filter(ImageFilter.GaussianBlur(radius=5))
+    if filter_type == "bw": image = ImageOps.grayscale(image)
+    elif filter_type == "blur": image = image.filter(ImageFilter.GaussianBlur(radius=5))
     elif filter_type == "vintage":
         image = ImageOps.grayscale(image)
         image = ImageOps.colorize(image, black="#2c1b18", white="#e0c9a6")
@@ -198,17 +231,10 @@ async def handle_photo(message: types.Message):
         enhancer = ImageEnhance.Contrast(image)
         image = enhancer.enhance(2.0)
 
-    # Сохраняем результат в память
     output = io.BytesIO()
     image.save(output, format='JPEG')
     output.seek(0)
-    
-    # ОТПРАВЛЯЕМ ФОТО ЧЕРЕЗ BufferedInputFile (исправлено!)
-    await message.reply_photo(
-        photo=BufferedInputFile(output.read(), filename="result.jpg"), 
-        caption="Готово!"
-    )
-    
+    await message.reply_photo(photo=BufferedInputFile(output.read(), filename="result.jpg"), caption="Готово!")
     user_modes[message.from_user.id] = "text"
 
 # --- ЗАПУСК ---
@@ -220,4 +246,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
