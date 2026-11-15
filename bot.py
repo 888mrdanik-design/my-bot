@@ -129,7 +129,7 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 # =========================================================
-# 🟢 ЗДЕСЬ НАХОДИТСЯ ФУНКЦИЯ handle_text (Обработка всех текстов)
+# 🟢 ЗДЕСЬ НАХОДИТСЯ ФУНКЦИЯ handle_text
 # =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -142,7 +142,7 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ПО REPLY ---
+    # --- АНАЛИЗ ФОТО ПО REPLY (Запрет LaTeX) ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -154,6 +154,7 @@ async def handle_text(message: types.Message):
             response = await client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
                 messages=[
+                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом (например, '*' для умножения, '/' для деления)."},
                     {
                         "role": "user",
                         "content": [
@@ -211,7 +212,7 @@ async def handle_text(message: types.Message):
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- НАПИСАНИЕ ТЕКСТА (ИСПРАВЛЕНО) ---
+    # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
@@ -223,7 +224,7 @@ async def handle_text(message: types.Message):
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
                 messages=[
-                    {"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему. Пиши интересно и по делу."},
+                    {"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему. Пиши интересно и по делу. Не используй LaTeX."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7, max_tokens=1500
@@ -246,12 +247,12 @@ async def handle_text(message: types.Message):
             await message.reply("Не удалось написать текст. Попробуй сформулировать тему проще или уменьши количество слов.")
         return
 
-    # --- ВОПРОСЫ / РЕДАКТОР ---
+    # --- ВОПРОСЫ / РЕДАКТОР (Запрет LaTeX) ---
     if mode == "question":
-        sys_prompt = "Ты — умный ассистент. Отвечай точно."
+        sys_prompt = "Ты — умный ассистент. Отвечай точно и понятно. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом (например, '*' для умножения, '/' для деления, 'x' для икса)."
         temp = 0.5
     else:
-        sys_prompt = "Ты — профессиональный редактор. Сокращай текст."
+        sys_prompt = "Ты — профессиональный редактор. Сокращай текст. ВАЖНО: не используй LaTeX и символы $ для формул."
         temp = 0.3
 
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
