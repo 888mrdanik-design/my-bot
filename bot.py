@@ -2,11 +2,12 @@ import asyncio
 import logging
 import os
 import io
+import base64
 import httpx
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from aiogram.types import BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import BufferedInputFile
 from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 from groq import AsyncGroq
 from aiohttp import web
@@ -14,8 +15,7 @@ from pptx import Presentation
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
-CHANNEL_ID = "@DDM_AI" 
+CHANNEL_ID = "@твой_канал_здесь" # Не забудь вставить свой юзернейм!
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     exit(1)
@@ -37,14 +37,12 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ---
+# --- ПРОВЕРКА ПОДПИСКИ ---
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        # Пользователь считается подписанным, если он участник, админ или создатель
         return member.status in ("member", "administrator", "creator")
-    except Exception as e:
-        logging.error(f"Ошибка проверки подписки: {e}")
+    except Exception:
         return False
 
 # --- КЛАВИАТУРЫ ---
@@ -52,13 +50,13 @@ def get_main_keyboard():
     builder = ReplyKeyboardBuilder()
     builder.button(text="📝 Работа с текстом")
     builder.button(text="🤖 Задать вопрос")
+    builder.button(text="✍️ Написать текст")
     builder.button(text="🎨 Фильтры для фото")
     builder.button(text="📊 Презентация")
-    builder.adjust(2, 2)
+    builder.adjust(2, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 def get_subscribe_keyboard():
-    # Кнопка со ссылкой на канал и кнопка проверки
     builder = InlineKeyboardBuilder()
     builder.button(text="📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_ID.replace('@', '')}")
     builder.button(text="✅ Я подписался", callback_data="check_sub")
@@ -76,80 +74,106 @@ def get_filters_keyboard():
 
 user_modes = {}
 
-# --- КОМАНДА /START С ПРОВЕРКОЙ ---
+# --- КОМАНДА /START ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if await is_subscribed(message.from_user.id):
-        await message.answer("Привет! Выбери, что будем делать 👇", reply_markup=get_main_keyboard())
-    else:
         await message.answer(
-            "Чтобы пользоваться ботом, подпишись на наш канал! 👇",
-            reply_markup=get_subscribe_keyboard()
+            "Привет! Выбери режим.\n\n💡 *Совет:* Чтобы решить задачу по фото или задать вопрос по тексту, просто *ответь (Reply)* на нужное сообщение и напиши свой запрос!", 
+            reply_markup=get_main_keyboard()
         )
+    else:
+        await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
 
-# --- ОБРАБОТКА КНОПКИ "Я ПОДПИСАЛСЯ" ---
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(callback: types.CallbackQuery):
     if await is_subscribed(callback.from_user.id):
-        await callback.message.delete() # Удаляем сообщение с кнопками
-        await callback.message.answer("Спасибо за подписку! Теперь выбери, что будем делать 👇", reply_markup=get_main_keyboard())
+        await callback.message.delete()
+        await callback.message.answer("Спасибо за подписку!", reply_markup=get_main_keyboard())
     else:
-        await callback.answer("Вы еще не подписались на канал!", show_alert=True)
-        # Можно обновить клавиатуру, чтобы кнопка "Подписаться" осталась
-        await callback.message.edit_reply_markup(reply_markup=get_subscribe_keyboard())
+        await callback.answer("Вы еще не подписались!", show_alert=True)
 
 # --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ---
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
-    await message.answer("Режим редактора. Отправь текст, и я его сокращу.", reply_markup=get_main_keyboard())
+    await message.answer("Режим редактора.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🤖 Задать вопрос")
 async def mode_question(message: types.Message):
     user_modes[message.from_user.id] = "question"
-    await message.answer("Режим вопросов. Спрашивай!", reply_markup=get_main_keyboard())
+    await message.answer("Режим вопросов.", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == "✍️ Написать текст")
+async def mode_write(message: types.Message):
+    user_modes[message.from_user.id] = "write"
+    await message.answer("Напиши тему и количество слов. Например: *'Космос, 50 слов'*", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🎨 Фильтры для фото")
 async def mode_filters(message: types.Message):
     user_modes[message.from_user.id] = "filter"
-    await message.answer("Выбери фильтр, а затем отправь фото:", reply_markup=get_filters_keyboard())
+    await message.answer("Выбери фильтр:", reply_markup=get_filters_keyboard())
 
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши мне тему презентации (например: 'История космоса'), и я сделаю файл PowerPoint!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации.", reply_markup=get_main_keyboard())
 
-# --- ОБРАБОТКА ВЫБОРА ФИЛЬТРА ---
+# --- ОБРАБОТКА ФИЛЬТРОВ ---
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
     filter_type = callback.data.split("_")[1]
     user_modes[callback.from_user.id] = f"filter_{filter_type}"
-    await callback.message.answer(f"Фильтр выбран! Отправь фото.")
+    await callback.message.answer("Фильтр выбран! Отправь фото.")
     await callback.answer()
 
-# --- ОБРАБОТКА ТЕКСТА И ПРЕЗЕНТАЦИЙ ---
+# --- ОБРАБОТКА ТЕКСТА ---
 @dp.message(F.text)
 async def handle_text(message: types.Message):
-    if message.text in ["📝 Работа с текстом", "🤖 Задать вопрос", "🎨 Фильтры для фото", "📊 Презентация"]:
+    if message.text in ["📝 Работа с текстом", "🤖 Задать вопрос", "✍️ Написать текст", "🎨 Фильтры для фото", "📊 Презентация"]:
         return
 
-    # Проверяем подписку перед каждым запросом (на случай, если отписался)
     if not await is_subscribed(message.from_user.id):
-        await message.answer("Ты отписался от канала. Подпишись снова, чтобы продолжить.", reply_markup=get_subscribe_keyboard())
+        await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    mode = user_modes.get(message.from_user.id, "text")
 
+    # --- АНАЛИЗ ФОТО ПО REPLY ---
+    if message.reply_to_message and message.reply_to_message.photo:
+        await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
+        photo = message.reply_to_message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        downloaded_file = await bot.download_file(file_info.file_path)
+        base64_image = base64.b64encode(downloaded_file.read()).decode('utf-8')
+        
+        try:
+            response = await client.chat.completions.create(
+                model="meta-llama/llama-4-maverick-17b-128e-instruct",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": message.text},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]
+                    }
+                ],
+                temperature=0.3, max_tokens=1500
+            )
+            await message.reply(response.choices[0].message.content)
+        except Exception as e:
+            logging.error(f"Ошибка анализа фото: {e}")
+            await message.reply("Не удалось проанализировать фото.")
+        return
+
+    mode = user_modes.get(message.from_user.id, "text")
+    reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
+
+    # --- ПРЕЗЕНТАЦИЯ ---
     if mode == "presentation":
-        await message.answer("Генерирую структуру и создаю файл... Это займет несколько секунд.")
-        sys_prompt = (
-            "Ты — эксперт по созданию презентаций. Напиши структуру для презентации на заданную тему. "
-            "Формат ответа СТРОГО такой, без лишних слов:\n"
-            "Слайд 1 | Заголовок | Текст слайда\n"
-            "Слайд 2 | Заголовок | Текст слайда\n"
-            "Сделай 5-7 слайдов."
-        )
+        await message.answer("Генерирую структуру и создаю файл...")
+        sys_prompt = "Ты — эксперт по созданию презентаций. Формат: Слайд 1 | Заголовок | Текст\nСделай 5-7 слайдов."
         try:
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
@@ -160,7 +184,6 @@ async def handle_text(message: types.Message):
             
             prs = Presentation()
             lines = text_response.strip().split('\n')
-            
             for line in lines:
                 if '|' in line:
                     parts = line.split('|')
@@ -181,38 +204,59 @@ async def handle_text(message: types.Message):
             await message.reply_document(document, caption="Твоя презентация готова! 🎉")
         except Exception as e:
             logging.error(f"Ошибка презентации: {e}")
-            await message.reply("Не удалось создать презентацию. Попробуй другую тему.")
+            await message.reply("Не удалось создать презентацию.")
         user_modes[message.from_user.id] = "text"
         return
 
+    # --- НАПИСАНИЕ ТЕКСТА ---
+    if mode == "write":
+        prompt = message.text
+        if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[{"role": "system", "content": "Ты — писатель. Напиши текст ровно столько слов, сколько просит пользователь."}, {"role": "user", "content": prompt}],
+                temperature=0.7, max_tokens=1500
+            )
+            generated_text = response.choices[0].message.content
+            word_count = len(generated_text.split())
+            await message.reply(f"{generated_text}\n\n_(Слов: {word_count})_", parse_mode="Markdown")
+        except Exception as e:
+            await message.reply("Ошибка.")
+        return
+
+    # --- ВОПРОСЫ / РЕДАКТОР ---
     if mode == "question":
-        sys_prompt = "Ты — умный ассистент. Отвечай на вопрос пользователя точно, по делу."
+        sys_prompt = "Ты — умный ассистент. Отвечай точно."
         temp = 0.5
     else:
-        sys_prompt = "Ты — профессиональный редактор. Сокращай и редактируй текст."
+        sys_prompt = "Ты — профессиональный редактор. Сокращай текст."
         temp = 0.3
+
+    user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
 
     try:
         response = await client.chat.completions.create(
             model="openai/gpt-oss-20b",
-            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": message.text}],
+            messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
             temperature=temp, max_tokens=1500
         )
         await message.reply(response.choices[0].message.content)
     except Exception as e:
-        logging.error(f"Ошибка текста: {e}")
         await message.reply("Ошибка при обработке.")
 
-# --- ОБРАБОТКА ФОТО ---
+# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
+    if message.reply_to_message: return # Если это Reply, обрабатывается в handle_text
+
     if not await is_subscribed(message.from_user.id):
-        await message.answer("Подпишись на канал, чтобы использовать фильтры.", reply_markup=get_subscribe_keyboard())
+        await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
         return
 
     mode = user_modes.get(message.from_user.id, "")
     if not mode.startswith("filter_"):
-        await message.reply("Выбери фильтр в меню '🎨 Фильтры для фото'!")
+        await message.reply("Выбери фильтр в меню, чтобы обработать фото.")
         return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
@@ -237,12 +281,11 @@ async def handle_photo(message: types.Message):
     await message.reply_photo(photo=BufferedInputFile(output.read(), filename="result.jpg"), caption="Готово!")
     user_modes[message.from_user.id] = "text"
 
-# --- ЗАПУСК ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     await start_web_server()
     print("Бот запущен...")
     await dp.start_polling(bot)
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     asyncio.run(main())
