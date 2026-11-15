@@ -29,21 +29,13 @@ client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=Fa
 def clean_math_text(text):
     if not text:
         return ""
-    # Убираем доллары
     text = text.replace('$', '')
-    # Заменяем дроби \frac{a}{b} на a/b
     text = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1)/(\2)', text)
-    # Заменяем умножение
     text = text.replace('\\cdot', '*')
-    # Заменяем косинусы, синусы
     text = text.replace('\\cos', 'cos').replace('\\sin', 'sin').replace('\\tan', 'tan')
-    # Заменяем корни
     text = text.replace('\\sqrt', 'sqrt')
-    # Убираем \left, \right
     text = text.replace('\\left', '').replace('\\right', '')
-    # Убираем \circ (градусы)
     text = text.replace('\\circ', '°')
-    # Убираем остальные слеши
     text = text.replace('\\', '')
     return text
 
@@ -151,7 +143,7 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 # =========================================================
-# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО
+# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО (СО СЖАТИЕМ)
 # =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -164,19 +156,29 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ПО REPLY ---
+    # --- АНАЛИЗ ФОТО ПО REPLY (СО СЖАТИЕМ) ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
-        base64_image = base64.b64encode(downloaded_file.read()).decode('utf-8')
+        
+        # --- СЖАТИЕ ФОТО ---
+        image = Image.open(io.BytesIO(downloaded_file.read()))
+        # Уменьшаем разрешение, чтобы фото точно прошло по лимитам
+        image.thumbnail((1024, 1024))
+        output = io.BytesIO()
+        image.save(output, format='JPEG', quality=85)
+        output.seek(0)
+        
+        # Переводим сжатое фото в base64
+        base64_image = base64.b64encode(output.read()).decode('utf-8')
         
         try:
             response = await client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
                 messages=[
-                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. Пиши подробное решение."},
+                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. Пиши подробное решение. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом."},
                     {
                         "role": "user",
                         "content": [
@@ -187,12 +189,11 @@ async def handle_text(message: types.Message):
                 ],
                 temperature=0.3, max_tokens=1500
             )
-            # Очищаем ответ от LaTeX и отправляем
             cleaned_response = clean_math_text(response.choices[0].message.content)
             await message.reply(cleaned_response)
         except Exception as e:
             logging.error(f"Ошибка анализа фото: {e}")
-            await message.reply("Не удалось проанализировать фото. Убедись, что оно меньше 20 МБ.")
+            await message.reply("Не удалось проанализировать фото. Попробуй отправить скриншот.")
         return
 
     mode = user_modes.get(message.from_user.id, "text")
@@ -268,7 +269,7 @@ async def handle_text(message: types.Message):
             
         except Exception as e:
             logging.error(f"Ошибка написания: {e}")
-            await message.reply("Не удалось написать текст. Попробуй сформулировать тему проще или уменьши количество слов.")
+            await message.reply("Не удалось написать текст. Попробуй уменьшить количество слов.")
         return
 
     # --- ВОПРОСЫ / РЕДАКТОР ---
@@ -287,7 +288,6 @@ async def handle_text(message: types.Message):
             messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
             temperature=temp, max_tokens=1500
         )
-        # Очищаем ответ от LaTeX и отправляем
         cleaned_response = clean_math_text(response.choices[0].message.content)
         await message.reply(cleaned_response)
     except Exception as e:
