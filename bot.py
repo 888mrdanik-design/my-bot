@@ -97,17 +97,17 @@ async def check_subscription(callback: types.CallbackQuery):
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
-    await message.answer("Режим редактора.", reply_markup=get_main_keyboard())
+    await message.answer("Режим редактора. Отправь текст.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🤖 Задать вопрос")
 async def mode_question(message: types.Message):
     user_modes[message.from_user.id] = "question"
-    await message.answer("Режим вопросов.", reply_markup=get_main_keyboard())
+    await message.answer("Режим вопросов. Спрашивай!", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "✍️ Написать текст")
 async def mode_write(message: types.Message):
     user_modes[message.from_user.id] = "write"
-    await message.answer("Напиши тему и количество слов. Например: *'Космос, 50 слов'*", reply_markup=get_main_keyboard())
+    await message.answer("Напиши мне тему и количество слов.\nНапример: *'Космос, 50 слов'*", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🎨 Фильтры для фото")
 async def mode_filters(message: types.Message):
@@ -119,7 +119,7 @@ async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
     await message.answer("Напиши тему презентации.", reply_markup=get_main_keyboard())
 
-# --- ОБРАБОТКА ФИЛЬТРОВ ---
+# --- ОБРАБОТКА ВЫБОРА ФИЛЬТРА ---
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
     filter_type = callback.data.split("_")[1]
@@ -139,7 +139,7 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ПО REPLY ---
+    # --- АНАЛИЗ ФОТО ПО REPLY (ИСПРАВЛЕНА МОДЕЛЬ) ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -149,7 +149,7 @@ async def handle_text(message: types.Message):
         
         try:
             response = await client.chat.completions.create(
-                model="meta-llama/llama-4-maverick-17b-128e-instruct",
+                model="qwen/qwen3.8-27b", # Новая рабочая модель для фото
                 messages=[
                     {
                         "role": "user",
@@ -164,7 +164,7 @@ async def handle_text(message: types.Message):
             await message.reply(response.choices[0].message.content)
         except Exception as e:
             logging.error(f"Ошибка анализа фото: {e}")
-            await message.reply("Не удалось проанализировать фото.")
+            await message.reply("Не удалось проанализировать фото. Убедись, что оно меньше 20 МБ.")
         return
 
     mode = user_modes.get(message.from_user.id, "text")
@@ -248,7 +248,7 @@ async def handle_text(message: types.Message):
 # --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    if message.reply_to_message: return # Если это Reply, обрабатывается в handle_text
+    if message.reply_to_message: return
 
     if not await is_subscribed(message.from_user.id):
         await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
