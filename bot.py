@@ -143,7 +143,7 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 # =========================================================
-# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО (СО СЖАТИЕМ)
+# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО
 # =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -163,15 +163,12 @@ async def handle_text(message: types.Message):
         file_info = await bot.get_file(photo.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
         
-        # --- СЖАТИЕ ФОТО ---
         image = Image.open(io.BytesIO(downloaded_file.read()))
-        # Уменьшаем разрешение, чтобы фото точно прошло по лимитам
         image.thumbnail((1024, 1024))
         output = io.BytesIO()
         image.save(output, format='JPEG', quality=85)
         output.seek(0)
         
-        # Переводим сжатое фото в base64
         base64_image = base64.b64encode(output.read()).decode('utf-8')
         
         try:
@@ -193,7 +190,7 @@ async def handle_text(message: types.Message):
             await message.reply(cleaned_response)
         except Exception as e:
             logging.error(f"Ошибка анализа фото: {e}")
-            await message.reply("Не удалось проанализировать фото. Попробуй отправить скриншот.")
+            await message.reply(f"Не удалось проанализировать фото: {e}")
         return
 
     mode = user_modes.get(message.from_user.id, "text")
@@ -233,11 +230,11 @@ async def handle_text(message: types.Message):
             await message.reply_document(document, caption="Твоя презентация готова! 🎉")
         except Exception as e:
             logging.error(f"Ошибка презентации: {e}")
-            await message.reply("Не удалось создать презентацию.")
+            await message.reply(f"Не удалось создать презентацию: {e}")
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- НАПИСАНИЕ ТЕКСТА ---
+    # --- НАПИСАНИЕ ТЕКСТА (С ВЫВОДОМ ОШИБОК) ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
@@ -257,7 +254,9 @@ async def handle_text(message: types.Message):
             generated_text = response.choices[0].message.content
             
             if not generated_text or not generated_text.strip():
-                raise ValueError("Нейросеть вернула пустой ответ.")
+                logging.error("Нейросеть вернула пустой ответ.")
+                await message.reply("Нейросеть не смогла написать текст. Попробуй переформулировать тему.")
+                return
 
             if target_words > 0:
                 words = generated_text.split()
@@ -269,7 +268,11 @@ async def handle_text(message: types.Message):
             
         except Exception as e:
             logging.error(f"Ошибка написания: {e}")
-            await message.reply("Не удалось написать текст. Попробуй уменьшить количество слов.")
+            error_message = str(e).lower()
+            if "rate limit" in error_message or "429" in error_message:
+                await message.reply("Превышен лимит запросов к Groq. Подожди минуту и попробуй снова.")
+            else:
+                await message.reply(f"Ошибка при написании текста: {e}")
         return
 
     # --- ВОПРОСЫ / РЕДАКТОР ---
@@ -291,7 +294,8 @@ async def handle_text(message: types.Message):
         cleaned_response = clean_math_text(response.choices[0].message.content)
         await message.reply(cleaned_response)
     except Exception as e:
-        await message.reply("Ошибка при обработке.")
+        logging.error(f"Ошибка обработки текста: {e}")
+        await message.reply(f"Ошибка при обработке: {e}")
 # =========================================================
 # 🟢 КОНЕЦ ФУНКЦИИ handle_text
 # =========================================================
