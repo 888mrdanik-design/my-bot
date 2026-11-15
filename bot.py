@@ -25,6 +25,28 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False))
 
+# --- ФУНКЦИЯ ОЧИСТКИ ФОРМУЛ ОТ LATEX ---
+def clean_math_text(text):
+    if not text:
+        return ""
+    # Убираем доллары
+    text = text.replace('$', '')
+    # Заменяем дроби \frac{a}{b} на a/b
+    text = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1)/(\2)', text)
+    # Заменяем умножение
+    text = text.replace('\\cdot', '*')
+    # Заменяем косинусы, синусы
+    text = text.replace('\\cos', 'cos').replace('\\sin', 'sin').replace('\\tan', 'tan')
+    # Заменяем корни
+    text = text.replace('\\sqrt', 'sqrt')
+    # Убираем \left, \right
+    text = text.replace('\\left', '').replace('\\right', '')
+    # Убираем \circ (градусы)
+    text = text.replace('\\circ', '°')
+    # Убираем остальные слеши
+    text = text.replace('\\', '')
+    return text
+
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running!")
@@ -129,7 +151,7 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 # =========================================================
-# 🟢 ЗДЕСЬ НАХОДИТСЯ ФУНКЦИЯ handle_text
+# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО
 # =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -142,7 +164,7 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ПО REPLY (Запрет LaTeX) ---
+    # --- АНАЛИЗ ФОТО ПО REPLY ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -154,7 +176,7 @@ async def handle_text(message: types.Message):
             response = await client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
                 messages=[
-                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом (например, '*' для умножения, '/' для деления)."},
+                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. Пиши подробное решение."},
                     {
                         "role": "user",
                         "content": [
@@ -165,7 +187,9 @@ async def handle_text(message: types.Message):
                 ],
                 temperature=0.3, max_tokens=1500
             )
-            await message.reply(response.choices[0].message.content)
+            # Очищаем ответ от LaTeX и отправляем
+            cleaned_response = clean_math_text(response.choices[0].message.content)
+            await message.reply(cleaned_response)
         except Exception as e:
             logging.error(f"Ошибка анализа фото: {e}")
             await message.reply("Не удалось проанализировать фото. Убедись, что оно меньше 20 МБ.")
@@ -224,7 +248,7 @@ async def handle_text(message: types.Message):
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
                 messages=[
-                    {"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему. Пиши интересно и по делу. Не используй LaTeX."},
+                    {"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему. Пиши интересно и по делу."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7, max_tokens=1500
@@ -247,12 +271,12 @@ async def handle_text(message: types.Message):
             await message.reply("Не удалось написать текст. Попробуй сформулировать тему проще или уменьши количество слов.")
         return
 
-    # --- ВОПРОСЫ / РЕДАКТОР (Запрет LaTeX) ---
+    # --- ВОПРОСЫ / РЕДАКТОР ---
     if mode == "question":
-        sys_prompt = "Ты — умный ассистент. Отвечай точно и понятно. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом (например, '*' для умножения, '/' для деления, 'x' для икса)."
+        sys_prompt = "Ты — умный ассистент. Отвечай точно и понятно."
         temp = 0.5
     else:
-        sys_prompt = "Ты — профессиональный редактор. Сокращай текст. ВАЖНО: не используй LaTeX и символы $ для формул."
+        sys_prompt = "Ты — профессиональный редактор. Сокращай текст."
         temp = 0.3
 
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
@@ -263,7 +287,9 @@ async def handle_text(message: types.Message):
             messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
             temperature=temp, max_tokens=1500
         )
-        await message.reply(response.choices[0].message.content)
+        # Очищаем ответ от LaTeX и отправляем
+        cleaned_response = clean_math_text(response.choices[0].message.content)
+        await message.reply(cleaned_response)
     except Exception as e:
         await message.reply("Ошибка при обработке.")
 # =========================================================
