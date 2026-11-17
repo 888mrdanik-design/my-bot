@@ -4,6 +4,7 @@ import os
 import io
 import base64
 import re
+import json
 import httpx
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -13,6 +14,9 @@ from PIL import Image, ImageOps, ImageFilter, ImageEnhance
 from groq import AsyncGroq
 from aiohttp import web
 from pptx import Presentation
+from pptx.util import Pt, Inches
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -25,17 +29,13 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False))
 
-# --- ФУНКЦИЯ ОЧИСТКИ ФОРМУЛ ОТ LATEX ---
+# --- ОЧИСТКА ОТ LATEX ---
 def clean_math_text(text):
-    if not text:
-        return ""
+    if not text: return ""
     text = text.replace('$', '')
     text = re.sub(r'\\frac\{([^{}]+)\}\{([^{}]+)\}', r'(\1)/(\2)', text)
-    text = text.replace('\\cdot', '*')
-    text = text.replace('\\cos', 'cos').replace('\\sin', 'sin').replace('\\tan', 'tan')
-    text = text.replace('\\sqrt', 'sqrt')
-    text = text.replace('\\left', '').replace('\\right', '')
-    text = text.replace('\\circ', '°')
+    text = text.replace('\\cdot', '*').replace('\\cos', 'cos').replace('\\sin', 'sin')
+    text = text.replace('\\left', '').replace('\\right', '').replace('\\circ', '°')
     text = text.replace('\\', '')
     return text
 
@@ -89,14 +89,11 @@ def get_filters_keyboard():
 
 user_modes = {}
 
-# --- КОМАНДА /START ---
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if await is_subscribed(message.from_user.id):
-        await message.answer(
-            "Привет! Выбери режим.\n\n💡 *Совет:* Чтобы решить задачу по фото или задать вопрос по тексту, просто *ответь (Reply)* на нужное сообщение и напиши свой запрос!", 
-            reply_markup=get_main_keyboard()
-        )
+        await message.answer("Привет! Выбери режим.", reply_markup=get_main_keyboard())
     else:
         await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
 
@@ -108,7 +105,7 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("Вы еще не подписались!", show_alert=True)
 
-# --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ ---
+# --- РЕЖИМЫ ---
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
@@ -132,9 +129,8 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации.", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации (например: 'Влияние нейросетей на бизнес'), и я сделаю красивую презентацию!", reply_markup=get_main_keyboard())
 
-# --- ОБРАБОТКА ВЫБОРА ФИЛЬТРА ---
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
     filter_type = callback.data.split("_")[1]
@@ -143,7 +139,7 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 # =========================================================
-# 🟢 ОБРАБОТКА ТЕКСТА И АНАЛИЗ ФОТО
+# 🟢 ОБРАБОТКА ТЕКСТА
 # =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
@@ -156,163 +152,165 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ПО REPLY (СО СЖАТИЕМ) ---
+    # --- АНАЛИЗ ФОТО ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
-        
         image = Image.open(io.BytesIO(downloaded_file.read()))
         image.thumbnail((1024, 1024))
         output = io.BytesIO()
         image.save(output, format='JPEG', quality=85)
         output.seek(0)
-        
         base64_image = base64.b64encode(output.read()).decode('utf-8')
         
         try:
             response = await client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
                 messages=[
-                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. Пиши подробное решение. ВАЖНО: не используй LaTeX и символы $ для формул. Пиши математику обычным текстом."},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": message.text},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                        ]
-                    }
+                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото. Пиши подробное решение."},
+                    {"role": "user", "content": [{"type": "text", "text": message.text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
                 ],
                 temperature=0.3, max_tokens=1500
             )
-            cleaned_response = clean_math_text(response.choices[0].message.content)
-            await message.reply(cleaned_response)
+            await message.reply(clean_math_text(response.choices[0].message.content))
         except Exception as e:
-            logging.error(f"Ошибка анализа фото: {e}")
             await message.reply(f"Не удалось проанализировать фото: {e}")
         return
 
     mode = user_modes.get(message.from_user.id, "text")
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
-    # --- ПРЕЗЕНТАЦИЯ ---
+    # =========================================================
+    # 🔥 УЛУЧШЕННЫЙ РЕЖИМ ПРЕЗЕНТАЦИИ
+    # =========================================================
     if mode == "presentation":
-        await message.answer("Генерирую структуру и создаю файл...")
-        sys_prompt = "Ты — эксперт по созданию презентаций. Формат: Слайд 1 | Заголовок | Текст\nСделай 5-7 слайдов."
+        await message.answer("Генерирую красивую презентацию с текстом... Это займет 10-15 секунд.")
+        sys_prompt = (
+            "Ты — профессиональный дизайнер презентаций. Твоя задача — создать структуру презентации на заданную тему. "
+            "Верни ответ СТРОГО в формате JSON (без markdown-разметки, без json). Формат:\n"
+            "{\n"
+            "  \"theme_color\": \"#RRGGBB\", // Основной цвет презентации (например, #1E3A8A)\n"
+            "  \"text_color\": \"#RRGGBB\", // Цвет текста (например, #FFFFFF)\n"
+            "  \"slides\": [\n"
+            "    {\"title\": \"Заголовок слайда 1\", \"text\": \"Подробный текст слайда. Напиши 3-5 предложений, раскрывающих тему.\"},\n"
+            "    {\"title\": \"Заголовок слайда 2\", \"text\": \"Текст...\"}\n"
+            "  ]\n"
+            "}\n"
+            "Сделай от 7 до 10 слайдов. Пиши много текста (доклад), чтобы презентация была содержательной."
+        )
         try:
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
                 messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": message.text}],
-                temperature=0.5, max_tokens=2000
+                temperature=0.6, max_tokens=3000 # Увеличили лимит токенов для большого текста
             )
-            text_response = response.choices[0].message.content
+            raw_response = response.choices[0].message.content.strip()
             
+            # Очищаем от возможных markdown-блоков
+            if raw_response.startswith("json"):
+                raw_response = raw_response[7:-3]
+            elif raw_response.startswith("```"):
+                raw_response = raw_response[3:-3]
+                
+            data = json.loads(raw_response)
+            
+            # Создаем презентацию
             prs = Presentation()
-            lines = text_response.strip().split('\n')
-            for line in lines:
-                if '|' in line:
-                    parts = line.split('|')
-                    if len(parts) >= 3:
-                        slide_title = parts[1].strip()
-                        slide_text = parts[2].strip()
-                        slide_layout = prs.slide_layouts[1]
-                        slide = prs.slides.add_slide(slide_layout)
-                        title = slide.shapes.title
-                        subtitle = slide.placeholders[1]
-                        title.text = slide_title
-                        subtitle.text = slide_text
+            theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
+            text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
+            
+            for slide_data in data.get("slides", []):
+                # Создаем пустой слайд
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                
+                # Заливаем фон цветом
+                background = slide.background
+                fill = background.fill
+                fill.solid()
+                fill.fore_color.rgb = theme_color
+                
+                # Добавляем заголовок
+                title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
+                title_frame = title_box.text_frame
+                title_frame.text = slide_data.get("title", "")
+                p = title_frame.paragraphs[0]
+                p.font.size = Pt(36)
+                p.font.bold = True
+                p.font.color.rgb = text_color
+                p.font.name = 'Arial'
+                
+                # Добавляем текст
+                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.8), Inches(9), Inches(5))
+                text_frame = text_box.text_frame
+                text_frame.text = slide_data.get("text", "")
+                text_frame.word_wrap = True
+                for paragraph in text_frame.paragraphs:
+                    paragraph.font.size = Pt(20)
+                    paragraph.font.color.rgb = text_color
+                    paragraph.font.name = 'Arial'
+                    paragraph.alignment = PP_ALIGN.LEFT
+                    paragraph.space_after = Pt(10)
             
             pptx_stream = io.BytesIO()
             prs.save(pptx_stream)
             pptx_stream.seek(0)
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
-            await message.reply_document(document, caption="Твоя презентация готова! 🎉")
+            await message.reply_document(document, caption="Твоя красивая презентация готова! 🎉")
+            
+        except json.JSONDecodeError:
+            await message.reply("Ошибка формата данных. Нейросеть запуталась. Попробуй еще раз.")
         except Exception as e:
             logging.error(f"Ошибка презентации: {e}")
             await message.reply(f"Не удалось создать презентацию: {e}")
+        
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- НАПИСАНИЕ ТЕКСТА (С ВЫВОДОМ ОШИБОК) ---
+    # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
-        
         match = re.search(r'\d+', prompt)
         target_words = int(match.group()) if match else 0
-
         try:
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
-                messages=[
-                    {"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему. Пиши интересно и по делу."},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=[{"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему."}, {"role": "user", "content": prompt}],
                 temperature=0.7, max_tokens=1500
             )
             generated_text = response.choices[0].message.content
-            
-            if not generated_text or not generated_text.strip():
-                logging.error("Нейросеть вернула пустой ответ.")
-                await message.reply("Нейросеть не смогла написать текст. Попробуй переформулировать тему.")
-                return
-
+            if not generated_text or not generated_text.strip(): raise ValueError("Пустой ответ")
             if target_words > 0:
                 words = generated_text.split()
-                if len(words) > target_words:
-                    generated_text = " ".join(words[:target_words]) + "..."
-            
-            final_word_count = len(generated_text.split())
-            await message.reply(f"{generated_text}\n\n_(Слов: {final_word_count})_", parse_mode="Markdown")
-            
+                if len(words) > target_words: generated_text = " ".join(words[:target_words]) + "..."
+            await message.reply(f"{generated_text}\n\n_(Слов: {len(generated_text.split())})_", parse_mode="Markdown")
         except Exception as e:
-            logging.error(f"Ошибка написания: {e}")
-            error_message = str(e).lower()
-            if "rate limit" in error_message or "429" in error_message:
-                await message.reply("Превышен лимит запросов к Groq. Подожди минуту и попробуй снова.")
-            else:
-                await message.reply(f"Ошибка при написании текста: {e}")
+            await message.reply(f"Ошибка: {e}")
         return
 
     # --- ВОПРОСЫ / РЕДАКТОР ---
-    if mode == "question":
-        sys_prompt = "Ты — умный ассистент. Отвечай точно и понятно."
-        temp = 0.5
-    else:
-        sys_prompt = "Ты — профессиональный редактор. Сокращай текст."
-        temp = 0.3
-
+    sys_prompt = "Ты — умный ассистент." if mode == "question" else "Ты — профессиональный редактор. Сокращай текст."
+    temp = 0.5 if mode == "question" else 0.3
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
-
     try:
         response = await client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}],
             temperature=temp, max_tokens=1500
         )
-        cleaned_response = clean_math_text(response.choices[0].message.content)
-        await message.reply(cleaned_response)
+        await message.reply(clean_math_text(response.choices[0].message.content))
     except Exception as e:
-        logging.error(f"Ошибка обработки текста: {e}")
-        await message.reply(f"Ошибка при обработке: {e}")
-# =========================================================
-# 🟢 КОНЕЦ ФУНКЦИИ handle_text
-# =========================================================
+        await message.reply(f"Ошибка: {e}")
 
 # --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.reply_to_message: return
-
-    if not await is_subscribed(message.from_user.id):
-        await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
-        return
-
+    if not await is_subscribed(message.from_user.id): return
     mode = user_modes.get(message.from_user.id, "")
-    if not mode.startswith("filter_"):
-        await message.reply("Выбери фильтр в меню, чтобы обработать фото.")
-        return
+    if not mode.startswith("filter_"): return
 
     await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
     photo = message.photo[-1]
