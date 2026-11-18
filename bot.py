@@ -17,7 +17,6 @@ from aiohttp import web
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from ddgs import DDGS
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -130,7 +129,7 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации. Я найду реальные фото или сгенерирую картинки, и сделаю красивый дизайн!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации. Я найду реальные фото из Википедии!", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
@@ -184,7 +183,7 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (УМНЫЙ ПОИСК + КРАСИВЫЙ ДИЗАЙН)
+    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (ПОИСК В ВИКИПЕДИИ)
     # =========================================================
     if mode == "presentation":
         await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
@@ -198,7 +197,7 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"Запрос для поиска фото на русском. ОБЯЗАТЕЛЬНО добавляй слова 'фото', 'место', 'памятник' или 'портрет'. Например: 'Пушкин портрет фото', 'Москва усадьба Пушкина'\",\n"
+            "      \"image_query\": \"Запрос для поиска в Википедии на русском (например: 'Пушкин Александр Сергеевич', 'Михайловское усадьба Пушкиных', 'Царскосельский лицей')\",\n"
             "      \"image_type\": \"real\", // 'real' для реальных фото, 'generated' для генерации\n"
             "      \"use_background\": true\n"
             "    }\n"
@@ -224,31 +223,29 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            async def get_real_image(query):
+            async def get_wiki_image(query):
                 try:
-                    results = DDGS(timeout=15).images(query, max_results=5, safesearch="moderate")
-                    if results:
-                        for res in results:
-                            try:
-                                img_url = res['image']
-                                async with httpx.AsyncClient() as client_img:
-                                    resp = await client_img.get(img_url, timeout=10.0)
-                                    if resp.status_code == 200:
-                                        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                                        if img.width < 400 or img.height < 300:
-                                            continue
-                                        
-                                        # Накладываем полупрозрачный черный слой прямо на картинку
-                                        overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
-                                        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-                                        
+                    # Ищем картинку в Википедии
+                    search_url = f"https://ru.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={quote(query)}&gsrlimit=1&prop=pageimages&piprop=original&format=json"
+                    async with httpx.AsyncClient() as client_img:
+                        resp = await client_img.get(search_url, timeout=15.0)
+                        if resp.status_code == 200:
+                            json_data = resp.json()
+                            pages = json_data.get("query", {}).get("pages", {})
+                            for page_id, page_data in pages.items():
+                                if "original" in page_data:
+                                    img_url = page_data["original"]["source"]
+                                    img_resp = await client_img.get(img_url, timeout=15.0)
+                                    if img_resp.status_code == 200:
+                                        img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+                                        # Затемняем для фона
+                                        enhancer = ImageEnhance.Brightness(img)
+                                        img = enhancer.enhance(0.4)
                                         out = io.BytesIO()
                                         img.save(out, format='JPEG')
                                         return io.BytesIO(out.getvalue())
-                            except:
-                                continue
                 except Exception as e:
-                    logging.error(f"Ошибка поиска фото: {e}")
+                    logging.error(f"Ошибка поиска в Википедии: {e}")
                 return None
 
             async def generate_image(prompt):
@@ -258,8 +255,8 @@ async def handle_text(message: types.Message):
                         resp = await client_img.get(url, timeout=40.0)
                         if resp.status_code == 200:
                             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                            overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
-                            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                            enhancer = ImageEnhance.Brightness(img)
+                            img = enhancer.enhance(0.4)
                             out = io.BytesIO()
                             img.save(out, format='JPEG')
                             return io.BytesIO(out.getvalue())
@@ -277,8 +274,8 @@ async def handle_text(message: types.Message):
                 # Фон
                 if use_bg and image_query:
                     if image_type == "real":
-                        await message.answer(f"Ищу фото: {slide_data.get('title')}...")
-                        img_data = await get_real_image(image_query)
+                        await message.answer(f"Ищу в Википедии: {slide_data.get('title')}...")
+                        img_data = await get_wiki_image(image_query)
                     else:
                         await message.answer(f"Генерирую: {slide_data.get('title')}...")
                         img_data = await generate_image(image_query)
