@@ -6,6 +6,7 @@ import base64
 import re
 import json
 import httpx
+from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -16,7 +17,7 @@ from aiohttp import web
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from ddgs import DDGS  # Новая библиотека для поиска фото
+from ddgs import DDGS  # Для поиска реальных фото
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -119,7 +120,7 @@ async def mode_question(message: types.Message):
 @dp.message(F.text == "✍️ Написать текст")
 async def mode_write(message: types.Message):
     user_modes[message.from_user.id] = "write"
-    await message.answer("Напиши мне тему и количество слов.\nНапример: **'Космос, 50 слов'**", reply_markup=get_main_keyboard())
+    await message.answer("Напиши мне тему и количество слов.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🎨 Фильтры для фото")
 async def mode_filters(message: types.Message):
@@ -129,7 +130,7 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации, и я найду реальные фото из интернета для слайдов!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации. Если тема про реальных людей или места — я найду реальные фото. Если про будущее/фантастику — сгенерирую нейрокартинки!", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
@@ -183,10 +184,10 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (ПОИСК РЕАЛЬНЫХ ФОТО)
+    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (ГИБРИДНЫЙ: РЕАЛЬНЫЕ ФОТО + ГЕНЕРАЦИЯ)
     # =========================================================
     if mode == "presentation":
-        await message.answer("Генерирую презентацию и ищу фото в интернете... Это займет около 30 секунд.")
+        await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
         sys_prompt = (
             "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
             "Верни ответ СТРОГО в формате JSON (без markdown-разметки). Формат:\n"
@@ -197,12 +198,13 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"Короткий запрос для поиска фото (на русском, например: 'Пушкин портрет' или 'город будущего')\",\n"
+            "      \"image_query\": \"Запрос для поиска фото на русском (например: 'Пушкин портрет', 'Эйфелева башня') ИЛИ английский промпт для генерации (например: 'future city, flying cars')\",\n"
+            "      \"image_type\": \"real\", // Напиши 'real', если нужна реальная фотография (люди, города, животные), и 'generated', если это фантастика, будущее или абстракция\n"
             "      \"use_background\": true\n"
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай 5 слайдов. Запросы для картинок (image_query) пиши на РУССКОМ языке."
+            "Сделай 5 слайдов. Если картинка реальная (real) - пиши запрос на русском. Если сгенерированная (generated) - на английском."
         )
         try:
             response = await client.chat.completions.create(
@@ -222,7 +224,7 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            # Функция для поиска и скачивания фото (с таймаутом)
+            # Функция поиска реального фото
             async def get_real_image(query):
                 try:
                     results = DDGS(timeout=15).images(query, max_results=1, safesearch="moderate")
@@ -233,29 +235,50 @@ async def handle_text(message: types.Message):
                             if resp.status_code == 200:
                                 img = Image.open(io.BytesIO(resp.content)).convert("RGB")
                                 enhancer = ImageEnhance.Brightness(img)
-                                img = enhancer.enhance(0.4)
+                                img = enhancer.enhance(0.4) # Затемняем
                                 out = io.BytesIO()
                                 img.save(out, format='JPEG')
                                 return io.BytesIO(out.getvalue())
                 except Exception as e:
-                    logging.error(f"Ошибка поиска/скачивания фото: {e}")
+                    logging.error(f"Ошибка поиска фото: {e}")
+                return None
+
+            # Функция генерации нейрокартинки
+            async def generate_image(prompt):
+                try:
+                    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1280&height=720&nologo=true"
+                    async with httpx.AsyncClient() as client_img:
+                        resp = await client_img.get(url, timeout=40.0)
+                        if resp.status_code == 200:
+                            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                            enhancer = ImageEnhance.Brightness(img)
+                            img = enhancer.enhance(0.4)
+                            out = io.BytesIO()
+                            img.save(out, format='JPEG')
+                            return io.BytesIO(out.getvalue())
+                except Exception as e:
+                    logging.error(f"Ошибка генерации: {e}")
                 return None
 
             for slide_data in data.get("slides", []):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
                 use_bg = slide_data.get("use_background", False)
                 image_query = slide_data.get("image_query", "")
+                image_type = slide_data.get("image_type", "real")
                 
+                img_data = None
                 # Фон
                 if use_bg and image_query:
-                    await message.answer(f"Ищу фото для: {slide_data.get('title')}...")
-                    img_data = await get_real_image(image_query)
-                    if img_data:
-                        slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
+                    if image_type == "real":
+                        await message.answer(f"Ищу реальное фото: {slide_data.get('title')}...")
+                        img_data = await get_real_image(image_query)
                     else:
-                        fill = slide.background.fill
-                        fill.solid()
-                        fill.fore_color.rgb = theme_color
+                        await message.answer(f"Генерирую картинку: {slide_data.get('title')}...")
+                        img_data = await generate_image(image_query)
+
+                # Установка фона или цвета
+                if img_data:
+                    slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
                 else:
                     fill = slide.background.fill
                     fill.solid()
@@ -293,10 +316,10 @@ async def handle_text(message: types.Message):
             prs.save(pptx_stream)
             pptx_stream.seek(0)
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
-            await message.reply_document(document, caption="Твоя презентация с реальными фото готова! 🎉")
+            await message.reply_document(document, caption="Твоя презентация готова! 🎉")
             
         except json.JSONDecodeError:
-            await message.reply("Ошибка формата данных. Нейросеть запуталась. Попробуй еще раз.")
+            await message.reply("Ошибка формата данных. Попробуй еще раз.")
         except Exception as e:
             logging.error(f"Ошибка презентации: {e}")
             await message.reply(f"Не удалось создать презентацию: {e}")
