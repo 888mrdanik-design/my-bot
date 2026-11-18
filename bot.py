@@ -130,7 +130,7 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации. Если тема про реальных людей или места — я найду реальные фото. Если про будущее/фантастику — сгенерирую нейрокартинки!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации. Я найду реальные фото или сгенерирую картинки, и сделаю красивый дизайн!", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
@@ -184,7 +184,7 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (БЕЗ ЧЕРНЫХ КВАДРАТОВ)
+    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (УМНЫЙ ПОИСК + КРАСИВЫЙ ДИЗАЙН)
     # =========================================================
     if mode == "presentation":
         await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
@@ -198,7 +198,7 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"Запрос для поиска фото на русском (например: 'Пушкин портрет') ИЛИ английский промпт для генерации (например: 'future city')\",\n"
+            "      \"image_query\": \"Запрос для поиска фото на русском. ОБЯЗАТЕЛЬНО добавляй слова 'фото', 'место', 'памятник' или 'портрет'. Например: 'Пушкин портрет фото', 'Москва усадьба Пушкина'\",\n"
             "      \"image_type\": \"real\", // 'real' для реальных фото, 'generated' для генерации\n"
             "      \"use_background\": true\n"
             "    }\n"
@@ -226,18 +226,27 @@ async def handle_text(message: types.Message):
             
             async def get_real_image(query):
                 try:
-                    results = DDGS(timeout=15).images(query, max_results=1, safesearch="moderate")
+                    results = DDGS(timeout=15).images(query, max_results=5, safesearch="moderate")
                     if results:
-                        img_url = results[0]['image']
-                        async with httpx.AsyncClient() as client_img:
-                            resp = await client_img.get(img_url, timeout=15.0)
-                            if resp.status_code == 200:
-                                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                                enhancer = ImageEnhance.Brightness(img)
-                                img = enhancer.enhance(0.3) # СИЛЬНОЕ ЗАТЕМНЕНИЕ (30% яркости)
-                                out = io.BytesIO()
-                                img.save(out, format='JPEG')
-                                return io.BytesIO(out.getvalue())
+                        for res in results:
+                            try:
+                                img_url = res['image']
+                                async with httpx.AsyncClient() as client_img:
+                                    resp = await client_img.get(img_url, timeout=10.0)
+                                    if resp.status_code == 200:
+                                        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                                        if img.width < 400 or img.height < 300:
+                                            continue
+                                        
+                                        # Накладываем полупрозрачный черный слой прямо на картинку
+                                        overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
+                                        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                                        
+                                        out = io.BytesIO()
+                                        img.save(out, format='JPEG')
+                                        return io.BytesIO(out.getvalue())
+                            except:
+                                continue
                 except Exception as e:
                     logging.error(f"Ошибка поиска фото: {e}")
                 return None
@@ -249,8 +258,8 @@ async def handle_text(message: types.Message):
                         resp = await client_img.get(url, timeout=40.0)
                         if resp.status_code == 200:
                             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                            enhancer = ImageEnhance.Brightness(img)
-                            img = enhancer.enhance(0.3) # СИЛЬНОЕ ЗАТЕМНЕНИЕ
+                            overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
+                            img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
                             out = io.BytesIO()
                             img.save(out, format='JPEG')
                             return io.BytesIO(out.getvalue())
@@ -282,24 +291,23 @@ async def handle_text(message: types.Message):
                     fill.solid()
                     fill.fore_color.rgb = theme_color
                 
-                # Заголовок (сверху)
+                # Заголовок
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
-                p.font.size = Pt(36)
+                p.font.size = Pt(32)
                 p.font.bold = True
-                p.font.color.rgb = RGBColor(255, 255, 255) # Всегда белый для контраста
+                p.font.color.rgb = text_color
                 p.font.name = 'Arial'
                 
-                # Текст (БЕЗ ПОДЛОЖКИ, ПРОСТО БЕЛЫЙ ТЕКСТ)
+                # Текст
                 text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
                 text_frame.word_wrap = True
                 for paragraph in text_frame.paragraphs:
-                    paragraph.font.size = Pt(16) # Чуть крупнее, так как нет подложки
-                    paragraph.font.bold = True # Жирный для читаемости
+                    paragraph.font.size = Pt(16)
                     paragraph.font.color.rgb = RGBColor(255, 255, 255)
                     paragraph.space_after = Pt(10)
                     paragraph.font.name = 'Arial'
