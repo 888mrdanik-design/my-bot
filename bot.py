@@ -34,7 +34,7 @@ client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=Fa
 is_maintenance = False
 
 # =========================================================
-# 🛡️ МИДДЛВАРЬ
+# 🛡️ защита  ДЛЯ ТЕХ. РАБОТ
 # =========================================================
 class MaintenanceMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.Message, data):
@@ -46,6 +46,7 @@ class MaintenanceMiddleware(BaseMiddleware):
 
 dp.message.middleware(MaintenanceMiddleware())
 
+# --- ОЧИСТКА ОТ LATEX ---
 def clean_math_text(text):
     if not text: return ""
     text = text.replace('$', '')
@@ -55,6 +56,7 @@ def clean_math_text(text):
     text = text.replace('\\', '')
     return text
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -67,6 +69,7 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
+# --- ПРОВЕРКА ПОДПИСКИ ---
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -74,6 +77,7 @@ async def is_subscribed(user_id: int) -> bool:
     except Exception:
         return False
 
+# --- КЛАВИАТУРЫ ---
 def get_main_keyboard(user_id):
     builder = ReplyKeyboardBuilder()
     builder.button(text="📝 Работа с текстом")
@@ -112,6 +116,7 @@ def get_admin_keyboard():
 
 user_modes = {}
 
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if await is_subscribed(message.from_user.id):
@@ -127,6 +132,7 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("Вы еще не подписались!", show_alert=True)
 
+# --- АДМИН-ПАНЕЛЬ ---
 @dp.message(F.text == "⚙️ Админ-панель")
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -141,6 +147,7 @@ async def toggle_maintenance(callback: types.CallbackQuery):
     status = "ВКЛЮЧЕНЫ" if is_maintenance else "ВЫКЛЮЧЕНЫ"
     await callback.message.edit_text(f"Тех. работы: **{status}**", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
+# --- РЕЖИМЫ ---
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
@@ -186,6 +193,7 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
+    # --- АНАЛИЗ ФОТО ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -212,9 +220,9 @@ async def handle_text(message: types.Message):
     mode = user_modes.get(message.from_user.id, "text")
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
-    # --- ПРЕЗЕНТАЦИЯ ---
+    # --- ПРЕЗЕНТАЦИЯ С КАРТИНКАМИ ---
     if mode == "presentation":
-        await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
+        await message.answer("Анализирую тему и готовлю презентацию с фото...")
         sys_prompt = (
             "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
             "Верни ответ СТРОГО в формате JSON (без markdown-разметки). Формат:\n"
@@ -225,13 +233,11 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"ОБЯЗАТЕЛЬНОЕ ПОЛЕ! Запрос для поиска в Википедии на русском. Например: 'Пушкин Александр Сергеевич' или 'Москва Кремль'.\",\n"
-            "      \"image_type\": \"real\",\n"
-            "      \"use_background\": true\n"
+            "      \"image_query\": \"ОБЯЗАТЕЛЬНОЕ ПОЛЕ! Запрос для поиска в Википедии на русском (например: 'Пушкин Александр Сергеевич')\"\n"
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай 5 слайдов. ОБЯЗАТЕЛЬНО заполняй поле image_query для каждого слайда!"
+            "Сделай 5 слайдов."
         )
         try:
             response = await client.chat.completions.create(
@@ -264,8 +270,8 @@ async def handle_text(message: types.Message):
                                     img_resp = await client_img.get(img_url, timeout=15.0)
                                     if img_resp.status_code == 200:
                                         img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
-                                        overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
-                                        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                                        enhancer = ImageEnhance.Brightness(img)
+                                        img = enhancer.enhance(0.4)
                                         out = io.BytesIO()
                                         img.save(out, format='JPEG')
                                         return io.BytesIO(out.getvalue())
@@ -276,30 +282,30 @@ async def handle_text(message: types.Message):
             for i, slide_data in enumerate(data.get("slides", [])):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
                 
-                # ЖЕСТКАЯ ПРОВЕРКА: если нейросеть забыла запрос, берем заголовок
                 image_query = slide_data.get("image_query", "")
-                if not image_query or len(image_query.strip()) < 3:
-                    image_query = slide_data.get("title", "") # Берем заголовок, если запроса нет
-                
-                await message.answer(f"({i+1}/5) Ищу фото: {image_query}...")
-                img_data = await get_wiki_image(image_query)
-                
-                await asyncio.sleep(1.0) # Пауза для стабильности
-
-                if img_data:
-                    slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
+                if image_query:
+                    await message.answer(f"({i+1}/5) Ищу фото: {slide_data.get('title')}...")
+                    img_data = await get_wiki_image(image_query)
+                    if img_data:
+                        slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
+                    else:
+                        fill = slide.background.fill
+                        fill.solid()
+                        fill.fore_color.rgb = theme_color
                 else:
                     fill = slide.background.fill
                     fill.solid()
                     fill.fore_color.rgb = theme_color
                 
+                await asyncio.sleep(1.0)
+
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
                 p.font.size = Pt(32)
                 p.font.bold = True
-                p.font.color.rgb = text_color
+                p.font.color.rgb = RGBColor(255, 255, 255)
                 p.font.name = 'Arial'
                 
                 text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
@@ -325,27 +331,45 @@ async def handle_text(message: types.Message):
         user_modes[message.from_user.id] = "text"
         return
 
+    # --- НАПИСАНИЕ ТЕКСТА (ИСПРАВЛЕНО) ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
+        
         match = re.search(r'\d+', prompt)
         target_words = int(match.group()) if match else 0
+
         try:
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
-                messages=[{"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему."}, {"role": "user", "content": prompt}],
-                temperature=0.7, max_tokens=1500
+                messages=[
+                    {"role": "system", "content": "Ты — талантливый писатель. Напиши интересный и подробный текст на заданную тему. Не пиши слишком коротко."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7, 
+                max_tokens=1500
             )
             generated_text = response.choices[0].message.content
-            if not generated_text or not generated_text.strip(): raise ValueError("Пустой ответ")
+            
+            if not generated_text or not generated_text.strip():
+                logging.error("Нейросеть вернула пустой ответ.")
+                await message.reply("Нейросеть не смогла написать текст (возможно, из-за лимитов). Попробуй еще раз.")
+                return
+
             if target_words > 0:
                 words = generated_text.split()
-                if len(words) > target_words: generated_text = " ".join(words[:target_words]) + "..."
-            await message.reply(f"{generated_text}\n\n_(Слов: {len(generated_text.split())})_", parse_mode="Markdown")
+                if len(words) > target_words:
+                    generated_text = " ".join(words[:target_words]) + "..."
+            
+            final_word_count = len(generated_text.split())
+            await message.reply(f"{generated_text}\n\n_(Слов: {final_word_count})_", parse_mode="Markdown")
+            
         except Exception as e:
-            await message.reply(f"Ошибка: {e}")
+            logging.error(f"Ошибка написания: {e}")
+            await message.reply(f"Ошибка при написании: {e}")
         return
 
+    # --- ВОПРОСЫ / РЕДАКТОР ---
     sys_prompt = "Ты — умный ассистент." if mode == "question" else "Ты — профессиональный редактор. Сокращай текст."
     temp = 0.5 if mode == "question" else 0.3
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
@@ -359,6 +383,7 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
+# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.reply_to_message: return
