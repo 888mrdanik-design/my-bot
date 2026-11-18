@@ -120,7 +120,7 @@ async def mode_question(message: types.Message):
 @dp.message(F.text == "✍️ Написать текст")
 async def mode_write(message: types.Message):
     user_modes[message.from_user.id] = "write"
-    await message.answer("Напиши мне тему и количество слов.\nНапример: *'Космос, 50 слов'*", reply_markup=get_main_keyboard())
+    await message.answer("Напиши мне тему и количество слов.\nНапример: **'Космос, 50 слов'**", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🎨 Фильтры для фото")
 async def mode_filters(message: types.Message):
@@ -130,7 +130,7 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации (например: 'Жизнь Пушкина' или 'Город будущего'), и я сделаю презентацию с картинками!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации, и я сделаю презентацию с фоновыми картинками!", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
@@ -184,25 +184,26 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 УЛУЧШЕННЫЙ РЕЖИМ ПРЕЗЕНТАЦИИ С КАРТИНКАМИ
+    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ С ФОНОВЫМИ КАРТИНКАМИ
     # =========================================================
     if mode == "presentation":
-        await message.answer("Генерирую презентацию с картинками... Это займет около 20 секунд.")
+        await message.answer("Генерирую презентацию с фоновыми картинками... Это займет около 30 секунд.")
         sys_prompt = (
             "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
-            "Верни ответ СТРОГО в формате JSON (без markdown-разметки, без json). Формат:\n"
+            "Верни ответ СТРОГО в формате JSON (без markdown-разметки, без ```json). Формат:\n"
             "{\n"
-            "  \"theme_color\": \"#RRGGBB\", // Основной цвет презентации\n"
-            "  \"text_color\": \"#RRGGBB\", // Цвет текста\n"
+            "  \"theme_color\": \"#RRGGBB\", // Основной цвет (если не будет картинки)\n"
+            "  \"text_color\": \"#FFFFFF\", // Цвет текста\n"
             "  \"slides\": [\n"
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
-            "      \"text\": \"Подробный текст слайда (3-4 предложения).\",\n"
-            "      \"image_prompt\": \"English prompt for image generation, e.g. 'beautiful future city with flying cars, sunset, realistic'\"\n"
+            "      \"text\": \"Текст слайда (3-5 предложений).\",\n"
+            "      \"image_prompt\": \"English prompt for image generation, e.g. 'beautiful future city with flying cars, sunset, realistic'\",\n"
+            "      \"use_background\": true // true - сделать картинку фоном, false - просто цветной фон\n"
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай от 5 до 7 слайдов. Описания картинок (image_prompt) пиши ТОЛЬКО на английском языке и делай их очень подробными (стиль, освещение, детали)."
+            "Сделай 5 слайдов. Для слайдов с большим текстом (где важна читаемость) ставь use_background: false. Для красивых заголовков и коротких тезисов ставь use_background: true. Описания картинок (image_prompt) пиши ТОЛЬКО на английском."
         )
         try:
             response = await client.chat.completions.create(
@@ -212,7 +213,7 @@ async def handle_text(message: types.Message):
             )
             raw_response = response.choices[0].message.content.strip()
             
-            if raw_response.startswith("json"): raw_response = raw_response[7:-3]
+            if raw_response.startswith("```json"): raw_response = raw_response[7:-3]
             elif raw_response.startswith("```"): raw_response = raw_response[3:-3]
                 
             data = json.loads(raw_response)
@@ -221,62 +222,80 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            # Асинхронная функция для скачивания картинки
             async def get_image(prompt):
                 try:
-                    # Используем бесплатный Pollinations AI
-                    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=800&height=600&nologo=true"
+                    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1280&height=720&nologo=true"
                     async with httpx.AsyncClient() as client_img:
-                        resp = await client_img.get(url, timeout=30.0)
+                        resp = await client_img.get(url, timeout=40.0)
                         if resp.status_code == 200:
-                            return io.BytesIO(resp.content)
+                            # Затемняем картинку, чтобы текст читался
+                            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                            enhancer = ImageEnhance.Brightness(img)
+                            img = enhancer.enhance(0.4) # Делаем темнее (40% яркости)
+                            out = io.BytesIO()
+                            img.save(out, format='JPEG')
+                            return io.BytesIO(out.getvalue())
                 except Exception as e:
                     logging.error(f"Ошибка скачивания картинки: {e}")
                 return None
 
             for slide_data in data.get("slides", []):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
+                use_bg = slide_data.get("use_background", False)
+                image_prompt = slide_data.get("image_prompt", "")
                 
-                # Фон
-                fill = slide.background.fill
-                fill.solid()
-                fill.fore_color.rgb = theme_color
+                # 1. Фон
+                if use_bg and image_prompt:
+                    await message.answer(f"Генерирую фон для: {slide_data.get('title')}...")
+                    img_data = await get_image(image_prompt)
+                    if img_data:
+                        # Растягиваем картинку на весь слайд
+                        slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
+                    else:
+                        # Если картинка не скачалась, просто заливаем цветом
+                        fill = slide.background.fill
+                        fill.solid()
+                        fill.fore_color.rgb = theme_color
+                else:
+                    # Обычный цветной фон
+                    fill = slide.background.fill
+                    fill.solid()
+                    fill.fore_color.rgb = theme_color
                 
-                # Заголовок
+                # 2. Заголовок (всегда сверху)
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
-                p.font.size = Pt(32)
+                p.font.size = Pt(36)
                 p.font.bold = True
                 p.font.color.rgb = text_color
+                p.font.name = 'Arial'
                 
-                # Текст (слева)
-                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.5), Inches(4.5))
+                # 3. Текст (снизу, в отдельном блоке с полупрозрачным фоном для читаемости)
+                # Создаем прямоугольник для подложки текста
+                text_bg = slide.shapes.add_shape(1, Inches(0.5), Inches(4.5), Inches(9), Inches(2.5)) # 1 - это прямоугольник
+                text_bg.fill.solid()
+                text_bg.fill.fore_color.rgb = RGBColor(0, 0, 0) # Черная подложка
+                text_bg.fill.transparency = 0.5 # Прозрачность 50%
+                text_bg.line.fill.background() # Убираем рамку
+                
+                # Сам текст
+                text_box = slide.shapes.add_textbox(Inches(0.6), Inches(4.6), Inches(8.8), Inches(2.3))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
                 text_frame.word_wrap = True
                 for paragraph in text_frame.paragraphs:
-                    paragraph.font.size = Pt(16)
+                    paragraph.font.size = Pt(18)
                     paragraph.font.color.rgb = text_color
                     paragraph.space_after = Pt(10)
-                
-                # Картинка (справа)
-                image_prompt = slide_data.get("image_prompt", "")
-                if image_prompt:
-                    await message.answer(f"Генерирую картинку для слайда: {slide_data.get('title')}...")
-                    img_data = await get_image(image_prompt)
-                    if img_data:
-                        try:
-                            slide.shapes.add_picture(img_data, Inches(5.2), Inches(1.5), width=Inches(4.5))
-                        except Exception as e:
-                            logging.error(f"Ошибка вставки картинки: {e}")
+                    paragraph.font.name = 'Arial'
 
             pptx_stream = io.BytesIO()
             prs.save(pptx_stream)
             pptx_stream.seek(0)
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
-            await message.reply_document(document, caption="Твоя презентация с картинками готова! 🎉")
+            await message.reply_document(document, caption="Твоя презентация с фоновыми картинками готова! 🎉")
             
         except json.JSONDecodeError:
             await message.reply("Ошибка формата данных. Нейросеть запуталась. Попробуй еще раз.")
