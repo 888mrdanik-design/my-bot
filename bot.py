@@ -18,6 +18,7 @@ from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
 
+# --- НАСТРОЙКИ ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 CHANNEL_ID = "@DDM_AI" # Не забудь вставить свой юзернейм!
@@ -38,16 +39,12 @@ is_maintenance = False
 # =========================================================
 class MaintenanceMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.Message, data):
-        # Если тех. работы включены, и пишет не админ
         if is_maintenance and event.from_user.id != ADMIN_ID:
-            # Проверяем, не нажал ли он админку (на всякий случай)
             if event.text != "⚙️ Админ-панель":
                 await event.answer("🛠 Ведутся технические работы. Пожалуйста, зайдите позже.")
-                return # Блокируем дальнейшую обработку
-        # Если тех. работы выключены или это админ — пропускаем дальше
+                return
         return await handler(event, data)
 
-# Подключаем миддлварь ко всем сообщениям
 dp.message.middleware(MaintenanceMiddleware())
 
 # --- ОЧИСТКА ОТ LATEX ---
@@ -232,14 +229,138 @@ async def handle_text(message: types.Message):
 
     # --- ПРЕЗЕНТАЦИЯ ---
     if mode == "presentation":
-        # (Вставь сюда свой большой код презентации)
-        await message.answer("Генерирую презентацию...")
+        await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
+        sys_prompt = (
+            "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
+            "Верни ответ СТРОГО в формате JSON (без markdown-разметки). Формат:\n"
+            "{\n"
+            "  \"theme_color\": \"#1E3A8A\",\n"
+            "  \"text_color\": \"#FFFFFF\",\n"
+            "  \"slides\": [\n"
+            "    {\n"
+            "      \"title\": \"Заголовок слайда 1\", \n"
+            "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
+            "      \"image_query\": \"Запрос для поиска в Википедии на русском (например: 'Пушкин Александр Сергеевич')\",\n"
+            "      \"image_type\": \"real\",\n"
+            "      \"use_background\": true\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            "Сделай 5 слайдов."
+        )
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": message.text}],
+                temperature=0.6, max_tokens=4000
+            )
+            raw_response = response.choices[0].message.content.strip()
+            
+            if raw_response.startswith("```json"): raw_response = raw_response[7:-3]
+            elif raw_response.startswith("```"): raw_response = raw_response[3:-3]
+                
+            data = json.loads(raw_response)
+            
+            prs = Presentation()
+            theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
+            text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
+            
+            async def get_wiki_image(query):
+                try:
+                    search_url = f"https://ru.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={quote(query)}&gsrlimit=1&prop=pageimages&piprop=original&format=json"
+                    async with httpx.AsyncClient() as client_img:
+                        resp = await client_img.get(search_url, timeout=15.0)
+                        if resp.status_code == 200:
+                            json_data = resp.json()
+                            pages = json_data.get("query", {}).get("pages", {})
+                            for page_id, page_data in pages.items():
+                                if "original" in page_data:
+                                    img_url = page_data["original"]["source"]
+                                    img_resp = await client_img.get(img_url, timeout=15.0)
+                                    if img_resp.status_code == 200:
+                                        img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+                                        overlay = Image.new('RGBA', img.size, (0, 0, 0, 180))
+                                        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                                        out = io.BytesIO()
+                                        img.save(out, format='JPEG')
+                                        return io.BytesIO(out.getvalue())
+                except Exception as e:
+                    logging.error(f"Ошибка поиска в Википедии: {e}")
+                return None
+
+            for i, slide_data in enumerate(data.get("slides", [])):
+                slide = prs.slides.add_slide(prs.slide_layouts[6])
+                use_bg = slide_data.get("use_background", False)
+                image_query = slide_data.get("image_query", "")
+                image_type = slide_data.get("image_type", "real")
+                
+                img_data = None
+                if use_bg and image_query:
+                    if image_type == "real":
+                        await message.answer(f"({i+1}/5) Ищу фото: {slide_data.get('title')}...")
+                        img_data = await get_wiki_image(image_query)
+                
+                await asyncio.sleep(1.0) # Пауза для стабильности Render
+
+                if img_data:
+                    slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
+                else:
+                    fill = slide.background.fill
+                    fill.solid()
+                    fill.fore_color.rgb = theme_color
+                
+                title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
+                title_frame = title_box.text_frame
+                title_frame.text = slide_data.get("title", "")
+                p = title_frame.paragraphs[0]
+                p.font.size = Pt(32)
+                p.font.bold = True
+                p.font.color.rgb = text_color
+                p.font.name = 'Arial'
+                
+                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
+                text_frame = text_box.text_frame
+                text_frame.text = slide_data.get("text", "")
+                text_frame.word_wrap = True
+                for paragraph in text_frame.paragraphs:
+                    paragraph.font.size = Pt(16)
+                    paragraph.font.color.rgb = RGBColor(255, 255, 255)
+                    paragraph.space_after = Pt(10)
+                    paragraph.font.name = 'Arial'
+
+            pptx_stream = io.BytesIO()
+            prs.save(pptx_stream)
+            pptx_stream.seek(0)
+            document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
+            await message.reply_document(document, caption="Твоя презентация готова! 🎉")
+            
+        except Exception as e:
+            logging.error(f"Ошибка презентации: {e}")
+            await message.reply(f"Не удалось создать презентацию: {e}")
+        
+        user_modes[message.from_user.id] = "text"
         return
 
     # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
-        # (Вставь сюда код написания текста)
-        await message.answer("Генерирую текст...")
+        prompt = message.text
+        if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
+        match = re.search(r'\d+', prompt)
+        target_words = int(match.group()) if match else 0
+        try:
+            response = await client.chat.completions.create(
+                model="openai/gpt-oss-20b",
+                messages=[{"role": "system", "content": "Ты — талантливый писатель. Напиши текст на заданную тему."}, {"role": "user", "content": prompt}],
+                temperature=0.7, max_tokens=1500
+            )
+            generated_text = response.choices[0].message.content
+            if not generated_text or not generated_text.strip(): raise ValueError("Пустой ответ")
+            if target_words > 0:
+                words = generated_text.split()
+                if len(words) > target_words: generated_text = " ".join(words[:target_words]) + "..."
+            await message.reply(f"{generated_text}\n\n_(Слов: {len(generated_text.split())})_", parse_mode="Markdown")
+        except Exception as e:
+            await message.reply(f"Ошибка: {e}")
         return
 
     # --- ВОПРОСЫ / РЕДАКТОР ---
@@ -256,7 +377,7 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
-# --- ОБРАБОТКА ФОТО ---
+# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.reply_to_message: return
