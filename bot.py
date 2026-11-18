@@ -31,11 +31,10 @@ bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=False))
 
-# Глобальный флаг для режима обслуживания
 is_maintenance = False
 
 # =========================================================
-# 🛡️ МИДДЛВАРЬ ДЛЯ БЛОКИРОВКИ ВСЕХ ДЕЙСТВИЙ ВО ВРЕМЯ ТЕХ. РАБОТ
+# 🛡️ МИДДЛВАРЬ
 # =========================================================
 class MaintenanceMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.Message, data):
@@ -47,7 +46,6 @@ class MaintenanceMiddleware(BaseMiddleware):
 
 dp.message.middleware(MaintenanceMiddleware())
 
-# --- ОЧИСТКА ОТ LATEX ---
 def clean_math_text(text):
     if not text: return ""
     text = text.replace('$', '')
@@ -57,7 +55,6 @@ def clean_math_text(text):
     text = text.replace('\\', '')
     return text
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -70,7 +67,6 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ПРОВЕРКА ПОДПИСКИ ---
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -78,7 +74,6 @@ async def is_subscribed(user_id: int) -> bool:
     except Exception:
         return False
 
-# --- КЛАВИАТУРЫ ---
 def get_main_keyboard(user_id):
     builder = ReplyKeyboardBuilder()
     builder.button(text="📝 Работа с текстом")
@@ -117,14 +112,10 @@ def get_admin_keyboard():
 
 user_modes = {}
 
-# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if await is_subscribed(message.from_user.id):
-        await message.answer(
-            "👋 Привет! Выбери режим кнопками внизу 👇",
-            reply_markup=get_main_keyboard(message.from_user.id)
-        )
+        await message.answer("👋 Привет! Выбери режим кнопками внизу 👇", reply_markup=get_main_keyboard(message.from_user.id))
     else:
         await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
 
@@ -136,7 +127,6 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("Вы еще не подписались!", show_alert=True)
 
-# --- АДМИН-ПАНЕЛЬ ---
 @dp.message(F.text == "⚙️ Админ-панель")
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -151,7 +141,6 @@ async def toggle_maintenance(callback: types.CallbackQuery):
     status = "ВКЛЮЧЕНЫ" if is_maintenance else "ВЫКЛЮЧЕНЫ"
     await callback.message.edit_text(f"Тех. работы: **{status}**", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
-# --- РЕЖИМЫ ---
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
@@ -197,7 +186,6 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -213,10 +201,7 @@ async def handle_text(message: types.Message):
         try:
             response = await client.chat.completions.create(
                 model="qwen/qwen3.8-27b",
-                messages=[
-                    {"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото."},
-                    {"role": "user", "content": [{"type": "text", "text": message.text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}
-                ],
+                messages=[{"role": "system", "content": "Ты — умный ассистент. Решай задачи по фото."},{"role": "user", "content": [{"type": "text", "text": message.text}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}]}],
                 temperature=0.3, max_tokens=1500
             )
             await message.reply(clean_math_text(response.choices[0].message.content))
@@ -240,13 +225,13 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"Запрос для поиска в Википедии на русском (например: 'Пушкин Александр Сергеевич')\",\n"
+            "      \"image_query\": \"ОБЯЗАТЕЛЬНОЕ ПОЛЕ! Запрос для поиска в Википедии на русском. Например: 'Пушкин Александр Сергеевич' или 'Москва Кремль'.\",\n"
             "      \"image_type\": \"real\",\n"
             "      \"use_background\": true\n"
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай 5 слайдов."
+            "Сделай 5 слайдов. ОБЯЗАТЕЛЬНО заполняй поле image_query для каждого слайда!"
         )
         try:
             response = await client.chat.completions.create(
@@ -290,17 +275,16 @@ async def handle_text(message: types.Message):
 
             for i, slide_data in enumerate(data.get("slides", [])):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
-                use_bg = slide_data.get("use_background", False)
+                
+                # ЖЕСТКАЯ ПРОВЕРКА: если нейросеть забыла запрос, берем заголовок
                 image_query = slide_data.get("image_query", "")
-                image_type = slide_data.get("image_type", "real")
+                if not image_query or len(image_query.strip()) < 3:
+                    image_query = slide_data.get("title", "") # Берем заголовок, если запроса нет
                 
-                img_data = None
-                if use_bg and image_query:
-                    if image_type == "real":
-                        await message.answer(f"({i+1}/5) Ищу фото: {slide_data.get('title')}...")
-                        img_data = await get_wiki_image(image_query)
+                await message.answer(f"({i+1}/5) Ищу фото: {image_query}...")
+                img_data = await get_wiki_image(image_query)
                 
-                await asyncio.sleep(1.0) # Пауза для стабильности Render
+                await asyncio.sleep(1.0) # Пауза для стабильности
 
                 if img_data:
                     slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
@@ -341,7 +325,6 @@ async def handle_text(message: types.Message):
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
@@ -363,7 +346,6 @@ async def handle_text(message: types.Message):
             await message.reply(f"Ошибка: {e}")
         return
 
-    # --- ВОПРОСЫ / РЕДАКТОР ---
     sys_prompt = "Ты — умный ассистент." if mode == "question" else "Ты — профессиональный редактор. Сокращай текст."
     temp = 0.5 if mode == "question" else 0.3
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
@@ -377,7 +359,6 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
-# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.reply_to_message: return
