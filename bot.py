@@ -20,7 +20,7 @@ from duckduckgo_search import DDGS # Библиотека для поиска к
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-CHANNEL_ID = "@твой_канал_здесь" # Не забудь вставить свой юзернейм!
+CHANNEL_ID = "@DDM_AI" # Не забудь вставить свой юзернейм!
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
     exit(1)
