@@ -257,47 +257,59 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            async def get_wiki_image(query):
+            # Функция поиска картинки (сначала Википедия, потом генерация)
+            async def get_image_for_slide(query):
+                # 1. Пробуем Википедию
                 try:
                     search_url = f"https://ru.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={quote(query)}&gsrlimit=1&prop=pageimages&piprop=original&format=json"
                     async with httpx.AsyncClient() as client_img:
-                        resp = await client_img.get(search_url, timeout=15.0)
+                        resp = await client_img.get(search_url, timeout=10.0)
                         if resp.status_code == 200:
                             json_data = resp.json()
                             pages = json_data.get("query", {}).get("pages", {})
                             for page_id, page_data in pages.items():
                                 if "original" in page_data:
                                     img_url = page_data["original"]["source"]
-                                    img_resp = await client_img.get(img_url, timeout=15.0)
+                                    img_resp = await client_img.get(img_url, timeout=10.0)
                                     if img_resp.status_code == 200:
                                         img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
                                         out = io.BytesIO()
                                         img.save(out, format='JPEG')
                                         return io.BytesIO(out.getvalue())
-                except Exception as e:
-                    logging.error(f"Ошибка поиска в Википедии: {e}")
+                except Exception:
+                    pass
+                
+                # 2. Если Википедия не дала фото, генерируем через Pollinations
+                try:
+                    gen_url = f"https://image.pollinations.ai/prompt/{quote(query)}?width=800&height=600&nologo=true"
+                    async with httpx.AsyncClient() as client_img:
+                        resp = await client_img.get(gen_url, timeout=20.0)
+                        if resp.status_code == 200:
+                            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                            out = io.BytesIO()
+                            img.save(out, format='JPEG')
+                            return io.BytesIO(out.getvalue())
+                except Exception:
+                    pass
+                
                 return None
 
             for i, slide_data in enumerate(data.get("slides", [])):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
                 
-                # Заливаем фон цветом
                 fill = slide.background.fill
                 fill.solid()
                 fill.fore_color.rgb = theme_color
 
-                # Ищем картинку
                 image_query = slide_data.get("image_query", "")
                 if image_query:
-                    await message.answer(f"({i+1}/5) Ищу фото: {slide_data.get('title')}...")
-                    img_data = await get_wiki_image(image_query)
+                    await message.answer(f"({i+1}/5) Ищу/генерирую фото: {slide_data.get('title')}...")
+                    img_data = await get_image_for_slide(image_query)
                     if img_data:
-                        # Вставляем картинку СПРАВА (а не на весь экран)
                         slide.shapes.add_picture(img_data, Inches(5.5), Inches(1.5), width=Inches(4.0))
                 
                 await asyncio.sleep(1.0)
 
-                # Заголовок (слева сверху)
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
@@ -307,7 +319,6 @@ async def handle_text(message: types.Message):
                 p.font.color.rgb = RGBColor(255, 255, 255)
                 p.font.name = 'Arial'
                 
-                # Текст (СЛЕВА)
                 text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.8), Inches(5.5))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
