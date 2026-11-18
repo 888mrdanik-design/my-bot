@@ -16,7 +16,7 @@ from aiohttp import web
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from duckduckgo_search import DDGS # Библиотека для поиска картинок
+from ddgs import DDGS  # Новая библиотека для поиска фото
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -202,7 +202,7 @@ async def handle_text(message: types.Message):
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай 5 слайдов. Запросы для картинок (image_query) пиши на РУССКОМ языке, чтобы поиск нашел нужные фото."
+            "Сделай 5 слайдов. Запросы для картинок (image_query) пиши на РУССКОМ языке."
         )
         try:
             response = await client.chat.completions.create(
@@ -222,18 +222,16 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            # Функция для поиска и скачивания фото из интернета
+            # Функция для поиска и скачивания фото (с таймаутом)
             async def get_real_image(query):
                 try:
-                    # Ищем картинку через DuckDuckGo
-                    results = DDGS().images(query, max_results=1, safesearch="moderate")
+                    results = DDGS(timeout=15).images(query, max_results=1, safesearch="moderate")
                     if results:
                         img_url = results[0]['image']
                         async with httpx.AsyncClient() as client_img:
                             resp = await client_img.get(img_url, timeout=15.0)
                             if resp.status_code == 200:
                                 img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                                # Затемняем для фона
                                 enhancer = ImageEnhance.Brightness(img)
                                 img = enhancer.enhance(0.4)
                                 out = io.BytesIO()
