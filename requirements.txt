@@ -4,4 +4,4 @@ httpx
 aiohttp
 Pillow
 python-pptx
-duckduckgo-search
+ddgs
