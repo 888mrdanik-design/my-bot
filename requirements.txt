@@ -4,4 +4,3 @@ httpx
 aiohttp
 Pillow
 python-pptx
-ddgs
