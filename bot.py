@@ -6,6 +6,7 @@ import base64
 import re
 import json
 import httpx
+from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -129,7 +130,7 @@ async def mode_filters(message: types.Message):
 @dp.message(F.text == "📊 Презентация")
 async def mode_presentation(message: types.Message):
     user_modes[message.from_user.id] = "presentation"
-    await message.answer("Напиши тему презентации (например: 'Влияние нейросетей на бизнес'), и я сделаю красивую презентацию!", reply_markup=get_main_keyboard())
+    await message.answer("Напиши тему презентации (например: 'Жизнь Пушкина' или 'Город будущего'), и я сделаю презентацию с картинками!", reply_markup=get_main_keyboard())
 
 @dp.callback_query(F.data.startswith("filter_"))
 async def process_filter_choice(callback: types.CallbackQuery):
@@ -183,81 +184,99 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 УЛУЧШЕННЫЙ РЕЖИМ ПРЕЗЕНТАЦИИ
+    # 🔥 УЛУЧШЕННЫЙ РЕЖИМ ПРЕЗЕНТАЦИИ С КАРТИНКАМИ
     # =========================================================
     if mode == "presentation":
-        await message.answer("Генерирую красивую презентацию с текстом... Это займет 10-15 секунд.")
+        await message.answer("Генерирую презентацию с картинками... Это займет около 20 секунд.")
         sys_prompt = (
-            "Ты — профессиональный дизайнер презентаций. Твоя задача — создать структуру презентации на заданную тему. "
+            "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
             "Верни ответ СТРОГО в формате JSON (без markdown-разметки, без json). Формат:\n"
             "{\n"
-            "  \"theme_color\": \"#RRGGBB\", // Основной цвет презентации (например, #1E3A8A)\n"
-            "  \"text_color\": \"#RRGGBB\", // Цвет текста (например, #FFFFFF)\n"
+            "  \"theme_color\": \"#RRGGBB\", // Основной цвет презентации\n"
+            "  \"text_color\": \"#RRGGBB\", // Цвет текста\n"
             "  \"slides\": [\n"
-            "    {\"title\": \"Заголовок слайда 1\", \"text\": \"Подробный текст слайда. Напиши 3-5 предложений, раскрывающих тему.\"},\n"
-            "    {\"title\": \"Заголовок слайда 2\", \"text\": \"Текст...\"}\n"
+            "    {\n"
+            "      \"title\": \"Заголовок слайда 1\", \n"
+            "      \"text\": \"Подробный текст слайда (3-4 предложения).\",\n"
+            "      \"image_prompt\": \"English prompt for image generation, e.g. 'beautiful future city with flying cars, sunset, realistic'\"\n"
+            "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай от 7 до 10 слайдов. Пиши много текста (доклад), чтобы презентация была содержательной."
+            "Сделай от 5 до 7 слайдов. Описания картинок (image_prompt) пиши ТОЛЬКО на английском языке и делай их очень подробными (стиль, освещение, детали)."
         )
         try:
             response = await client.chat.completions.create(
                 model="openai/gpt-oss-20b",
                 messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": message.text}],
-                temperature=0.6, max_tokens=3000 # Увеличили лимит токенов для большого текста
+                temperature=0.6, max_tokens=3000
             )
             raw_response = response.choices[0].message.content.strip()
             
-            # Очищаем от возможных markdown-блоков
-            if raw_response.startswith("json"):
-                raw_response = raw_response[7:-3]
-            elif raw_response.startswith("```"):
-                raw_response = raw_response[3:-3]
+            if raw_response.startswith("json"): raw_response = raw_response[7:-3]
+            elif raw_response.startswith("```"): raw_response = raw_response[3:-3]
                 
             data = json.loads(raw_response)
             
-            # Создаем презентацию
             prs = Presentation()
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
+            # Асинхронная функция для скачивания картинки
+            async def get_image(prompt):
+                try:
+                    # Используем бесплатный Pollinations AI
+                    url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=800&height=600&nologo=true"
+                    async with httpx.AsyncClient() as client_img:
+                        resp = await client_img.get(url, timeout=30.0)
+                        if resp.status_code == 200:
+                            return io.BytesIO(resp.content)
+                except Exception as e:
+                    logging.error(f"Ошибка скачивания картинки: {e}")
+                return None
+
             for slide_data in data.get("slides", []):
-                # Создаем пустой слайд
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
                 
-                # Заливаем фон цветом
-                background = slide.background
-                fill = background.fill
+                # Фон
+                fill = slide.background.fill
                 fill.solid()
                 fill.fore_color.rgb = theme_color
                 
-                # Добавляем заголовок
-                title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(9), Inches(1))
+                # Заголовок
+                title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
-                p.font.size = Pt(36)
+                p.font.size = Pt(32)
                 p.font.bold = True
                 p.font.color.rgb = text_color
-                p.font.name = 'Arial'
                 
-                # Добавляем текст
-                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.8), Inches(9), Inches(5))
+                # Текст (слева)
+                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.5), Inches(4.5))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
                 text_frame.word_wrap = True
                 for paragraph in text_frame.paragraphs:
-                    paragraph.font.size = Pt(20)
+                    paragraph.font.size = Pt(16)
                     paragraph.font.color.rgb = text_color
-                    paragraph.font.name = 'Arial'
-                    paragraph.alignment = PP_ALIGN.LEFT
                     paragraph.space_after = Pt(10)
-            
+                
+                # Картинка (справа)
+                image_prompt = slide_data.get("image_prompt", "")
+                if image_prompt:
+                    await message.answer(f"Генерирую картинку для слайда: {slide_data.get('title')}...")
+                    img_data = await get_image(image_prompt)
+                    if img_data:
+                        try:
+                            slide.shapes.add_picture(img_data, Inches(5.2), Inches(1.5), width=Inches(4.5))
+                        except Exception as e:
+                            logging.error(f"Ошибка вставки картинки: {e}")
+
             pptx_stream = io.BytesIO()
             prs.save(pptx_stream)
             pptx_stream.seek(0)
             document = BufferedInputFile(pptx_stream.read(), filename="presentation.pptx")
-            await message.reply_document(document, caption="Твоя красивая презентация готова! 🎉")
+            await message.reply_document(document, caption="Твоя презентация с картинками готова! 🎉")
             
         except json.JSONDecodeError:
             await message.reply("Ошибка формата данных. Нейросеть запуталась. Попробуй еще раз.")
