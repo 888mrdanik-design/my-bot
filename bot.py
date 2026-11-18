@@ -17,7 +17,7 @@ from aiohttp import web
 from pptx import Presentation
 from pptx.util import Pt, Inches
 from pptx.dml.color import RGBColor
-from ddgs import DDGS  # Для поиска реальных фото
+from ddgs import DDGS
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -184,7 +184,7 @@ async def handle_text(message: types.Message):
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
     # =========================================================
-    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (ГИБРИДНЫЙ: РЕАЛЬНЫЕ ФОТО + ГЕНЕРАЦИЯ)
+    # 🔥 РЕЖИМ ПРЕЗЕНТАЦИИ (БЕЗ ЧЕРНЫХ КВАДРАТОВ)
     # =========================================================
     if mode == "presentation":
         await message.answer("Анализирую тему и готовлю презентацию... Это займет около 30 секунд.")
@@ -198,13 +198,13 @@ async def handle_text(message: types.Message):
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
             "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"Запрос для поиска фото на русском (например: 'Пушкин портрет', 'Эйфелева башня') ИЛИ английский промпт для генерации (например: 'future city, flying cars')\",\n"
-            "      \"image_type\": \"real\", // Напиши 'real', если нужна реальная фотография (люди, города, животные), и 'generated', если это фантастика, будущее или абстракция\n"
+            "      \"image_query\": \"Запрос для поиска фото на русском (например: 'Пушкин портрет') ИЛИ английский промпт для генерации (например: 'future city')\",\n"
+            "      \"image_type\": \"real\", // 'real' для реальных фото, 'generated' для генерации\n"
             "      \"use_background\": true\n"
             "    }\n"
             "  ]\n"
             "}\n"
-            "Сделай 5 слайдов. Если картинка реальная (real) - пиши запрос на русском. Если сгенерированная (generated) - на английском."
+            "Сделай 5 слайдов."
         )
         try:
             response = await client.chat.completions.create(
@@ -224,7 +224,6 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            # Функция поиска реального фото
             async def get_real_image(query):
                 try:
                     results = DDGS(timeout=15).images(query, max_results=1, safesearch="moderate")
@@ -235,7 +234,7 @@ async def handle_text(message: types.Message):
                             if resp.status_code == 200:
                                 img = Image.open(io.BytesIO(resp.content)).convert("RGB")
                                 enhancer = ImageEnhance.Brightness(img)
-                                img = enhancer.enhance(0.4) # Затемняем
+                                img = enhancer.enhance(0.3) # СИЛЬНОЕ ЗАТЕМНЕНИЕ (30% яркости)
                                 out = io.BytesIO()
                                 img.save(out, format='JPEG')
                                 return io.BytesIO(out.getvalue())
@@ -243,7 +242,6 @@ async def handle_text(message: types.Message):
                     logging.error(f"Ошибка поиска фото: {e}")
                 return None
 
-            # Функция генерации нейрокартинки
             async def generate_image(prompt):
                 try:
                     url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1280&height=720&nologo=true"
@@ -252,7 +250,7 @@ async def handle_text(message: types.Message):
                         if resp.status_code == 200:
                             img = Image.open(io.BytesIO(resp.content)).convert("RGB")
                             enhancer = ImageEnhance.Brightness(img)
-                            img = enhancer.enhance(0.4)
+                            img = enhancer.enhance(0.3) # СИЛЬНОЕ ЗАТЕМНЕНИЕ
                             out = io.BytesIO()
                             img.save(out, format='JPEG')
                             return io.BytesIO(out.getvalue())
@@ -270,13 +268,13 @@ async def handle_text(message: types.Message):
                 # Фон
                 if use_bg and image_query:
                     if image_type == "real":
-                        await message.answer(f"Ищу реальное фото: {slide_data.get('title')}...")
+                        await message.answer(f"Ищу фото: {slide_data.get('title')}...")
                         img_data = await get_real_image(image_query)
                     else:
-                        await message.answer(f"Генерирую картинку: {slide_data.get('title')}...")
+                        await message.answer(f"Генерирую: {slide_data.get('title')}...")
                         img_data = await generate_image(image_query)
 
-                # Установка фона или цвета
+                # Установка фона
                 if img_data:
                     slide.shapes.add_picture(img_data, Inches(0), Inches(0), width=prs.slide_width, height=prs.slide_height)
                 else:
@@ -284,32 +282,26 @@ async def handle_text(message: types.Message):
                     fill.solid()
                     fill.fore_color.rgb = theme_color
                 
-                # Заголовок
+                # Заголовок (сверху)
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
-                p.font.size = Pt(32)
+                p.font.size = Pt(36)
                 p.font.bold = True
-                p.font.color.rgb = text_color
+                p.font.color.rgb = RGBColor(255, 255, 255) # Всегда белый для контраста
                 p.font.name = 'Arial'
                 
-                # Подложка для текста
-                text_bg = slide.shapes.add_shape(1, Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
-                text_bg.fill.solid()
-                text_bg.fill.fore_color.rgb = RGBColor(0, 0, 0)
-                text_bg.fill.transparency = 0.6
-                text_bg.line.fill.background()
-                
-                # Текст
-                text_box = slide.shapes.add_textbox(Inches(0.6), Inches(1.6), Inches(8.8), Inches(5.3))
+                # Текст (БЕЗ ПОДЛОЖКИ, ПРОСТО БЕЛЫЙ ТЕКСТ)
+                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
                 text_frame.word_wrap = True
                 for paragraph in text_frame.paragraphs:
-                    paragraph.font.size = Pt(14)
-                    paragraph.font.color.rgb = text_color
-                    paragraph.space_after = Pt(8)
+                    paragraph.font.size = Pt(16) # Чуть крупнее, так как нет подложки
+                    paragraph.font.bold = True # Жирный для читаемости
+                    paragraph.font.color.rgb = RGBColor(255, 255, 255)
+                    paragraph.space_after = Pt(10)
                     paragraph.font.name = 'Arial'
 
             pptx_stream = io.BytesIO()
