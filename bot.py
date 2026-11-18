@@ -7,7 +7,7 @@ import re
 import json
 import httpx
 from urllib.parse import quote
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.types import BufferedInputFile
@@ -32,6 +32,23 @@ client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=Fa
 
 # Глобальный флаг для режима обслуживания
 is_maintenance = False
+
+# =========================================================
+# 🛡️ МИДДЛВАРЬ ДЛЯ БЛОКИРОВКИ ВСЕХ ДЕЙСТВИЙ ВО ВРЕМЯ ТЕХ. РАБОТ
+# =========================================================
+class MaintenanceMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: types.Message, data):
+        # Если тех. работы включены, и пишет не админ
+        if is_maintenance and event.from_user.id != ADMIN_ID:
+            # Проверяем, не нажал ли он админку (на всякий случай)
+            if event.text != "⚙️ Админ-панель":
+                await event.answer("🛠 Ведутся технические работы. Пожалуйста, зайдите позже.")
+                return # Блокируем дальнейшую обработку
+        # Если тех. работы выключены или это админ — пропускаем дальше
+        return await handler(event, data)
+
+# Подключаем миддлварь ко всем сообщениям
+dp.message.middleware(MaintenanceMiddleware())
 
 # --- ОЧИСТКА ОТ LATEX ---
 def clean_math_text(text):
@@ -103,14 +120,9 @@ def get_admin_keyboard():
 
 user_modes = {}
 
-# --- СТАРТ (С ПРОВЕРКОЙ ТЕХ. РАБОТ) ---
+# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Если тех работы включены, и это НЕ админ — сразу блокируем
-    if is_maintenance and message.from_user.id != ADMIN_ID:
-        await message.answer("🛠 Ведутся технические работы. Пожалуйста, зайдите позже.")
-        return
-
     if await is_subscribed(message.from_user.id):
         await message.answer(
             "👋 Привет! Выбери режим кнопками внизу 👇",
@@ -121,10 +133,6 @@ async def cmd_start(message: types.Message):
 
 @dp.callback_query(F.data == "check_sub")
 async def check_subscription(callback: types.CallbackQuery):
-    if is_maintenance and callback.from_user.id != ADMIN_ID:
-        await callback.answer("🛠 Ведутся технические работы.", show_alert=True)
-        return
-        
     if await is_subscribed(callback.from_user.id):
         await callback.message.delete()
         await callback.message.answer("Спасибо за подписку!", reply_markup=get_main_keyboard(callback.from_user.id))
@@ -186,11 +194,6 @@ async def handle_text(message: types.Message):
     if message.text in ["📝 Работа с текстом", "🤖 Задать вопрос", "✍️ Написать текст", "🎨 Фильтры для фото", "📊 Презентация", "⚙️ Админ-панель"]:
         return
 
-    # ПРОВЕРКА ТЕХ. РАБОТ
-    if is_maintenance and message.from_user.id != ADMIN_ID:
-        await message.answer("🛠 Ведутся технические работы. Пожалуйста, зайдите позже.")
-        return
-
     if not await is_subscribed(message.from_user.id):
         await message.answer("Подпишись на канал!", reply_markup=get_subscribe_keyboard())
         return
@@ -236,23 +239,7 @@ async def handle_text(message: types.Message):
     # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
         # (Вставь сюда код написания текста)
-        prompt = message.text
-        if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
-        match = re.search(r'\d+', prompt)
-        target_words = int(match.group()) if match else 0
-        try:
-            response = await client.chat.completions.create(
-                model="openai/gpt-oss-20b",
-                messages=[{"role": "system", "content": "Ты — талантливый писатель."}, {"role": "user", "content": prompt}],
-                temperature=0.7, max_tokens=1500
-            )
-            generated_text = response.choices[0].message.content
-            if target_words > 0:
-                words = generated_text.split()
-                if len(words) > target_words: generated_text = " ".join(words[:target_words]) + "..."
-            await message.reply(f"{generated_text}\n\n_(Слов: {len(generated_text.split())})_", parse_mode="Markdown")
-        except Exception as e:
-            await message.reply(f"Ошибка: {e}")
+        await message.answer("Генерирую текст...")
         return
 
     # --- ВОПРОСЫ / РЕДАКТОР ---
@@ -272,9 +259,6 @@ async def handle_text(message: types.Message):
 # --- ОБРАБОТКА ФОТО ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    if is_maintenance and message.from_user.id != ADMIN_ID:
-        await message.answer("🛠 Ведутся технические работы.")
-        return
     if message.reply_to_message: return
     if not await is_subscribed(message.from_user.id): return
     
