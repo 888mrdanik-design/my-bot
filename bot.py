@@ -6,7 +6,6 @@ import base64
 import re
 import json
 import httpx
-from urllib.parse import quote
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -33,9 +32,6 @@ client = AsyncGroq(api_key=GROQ_API_KEY, http_client=httpx.AsyncClient(verify=Fa
 
 is_maintenance = False
 
-# =========================================================
-# 🛡️ МИДДЛВАРЬ ДЛЯ ТЕХ. РАБОТ
-# =========================================================
 class MaintenanceMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: types.Message, data):
         if is_maintenance and event.from_user.id != ADMIN_ID:
@@ -46,7 +42,6 @@ class MaintenanceMiddleware(BaseMiddleware):
 
 dp.message.middleware(MaintenanceMiddleware())
 
-# --- ОЧИСТКА ОТ LATEX ---
 def clean_math_text(text):
     if not text: return ""
     text = text.replace('$', '')
@@ -56,7 +51,6 @@ def clean_math_text(text):
     text = text.replace('\\', '')
     return text
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running!")
 
@@ -69,7 +63,6 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-# --- ПРОВЕРКА ПОДПИСКИ ---
 async def is_subscribed(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
@@ -77,7 +70,6 @@ async def is_subscribed(user_id: int) -> bool:
     except Exception:
         return False
 
-# --- КЛАВИАТУРЫ ---
 def get_main_keyboard(user_id):
     builder = ReplyKeyboardBuilder()
     builder.button(text="📝 Работа с текстом")
@@ -116,7 +108,6 @@ def get_admin_keyboard():
 
 user_modes = {}
 
-# --- СТАРТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if await is_subscribed(message.from_user.id):
@@ -132,7 +123,6 @@ async def check_subscription(callback: types.CallbackQuery):
     else:
         await callback.answer("Вы еще не подписались!", show_alert=True)
 
-# --- АДМИН-ПАНЕЛЬ ---
 @dp.message(F.text == "⚙️ Админ-панель")
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
@@ -147,7 +137,6 @@ async def toggle_maintenance(callback: types.CallbackQuery):
     status = "ВКЛЮЧЕНЫ" if is_maintenance else "ВЫКЛЮЧЕНЫ"
     await callback.message.edit_text(f"Тех. работы: **{status}**", reply_markup=get_admin_keyboard(), parse_mode="Markdown")
 
-# --- РЕЖИМЫ ---
 @dp.message(F.text == "📝 Работа с текстом")
 async def mode_text(message: types.Message):
     user_modes[message.from_user.id] = "text"
@@ -179,9 +168,6 @@ async def process_filter_choice(callback: types.CallbackQuery):
     await callback.message.answer("Фильтр выбран! Отправь фото.")
     await callback.answer()
 
-# =========================================================
-# 🟢 ОБРАБОТКА ТЕКСТА
-# =========================================================
 @dp.message(F.text)
 async def handle_text(message: types.Message):
     if message.text in ["📝 Работа с текстом", "🤖 Задать вопрос", "✍️ Написать текст", "🎨 Фильтры для фото", "📊 Презентация", "⚙️ Админ-панель"]:
@@ -193,7 +179,6 @@ async def handle_text(message: types.Message):
 
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-    # --- АНАЛИЗ ФОТО ---
     if message.reply_to_message and message.reply_to_message.photo:
         await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
         photo = message.reply_to_message.photo[-1]
@@ -220,21 +205,20 @@ async def handle_text(message: types.Message):
     mode = user_modes.get(message.from_user.id, "text")
     reply_to_text = message.reply_to_message.text if message.reply_to_message else ""
 
-    # --- ПРЕЗЕНТАЦИЯ С КАРТИНКАМИ ---
+    # --- ПРЕЗЕНТАЦИЯ (ЧИСТЫЙ ТЕКСТ И ЦВЕТА) ---
     if mode == "presentation":
-        await message.answer("Анализирую тему и готовлю презентацию с фото...")
+        await message.answer("Анализирую тему и готовлю красивую презентацию...")
         sys_prompt = (
             "Ты — профессиональный дизайнер презентаций. Создай структуру презентации на заданную тему. "
             "ОТВЕЧАЙ СТРОГО НА РУССКОМ ЯЗЫКЕ! "
             "Верни ответ СТРОГО в формате JSON (без markdown-разметки). Формат:\n"
             "{\n"
-            "  \"theme_color\": \"#1E3A8A\",\n"
-            "  \"text_color\": \"#FFFFFF\",\n"
+            "  \"theme_color\": \"#RRGGBB\", // Цвет фона (подбери под тему)\n"
+            "  \"text_color\": \"#RRGGBB\", // Цвет текста (обычно #FFFFFF)\n"
             "  \"slides\": [\n"
             "    {\n"
             "      \"title\": \"Заголовок слайда 1\", \n"
-            "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ НА РУССКОМ ЯЗЫКЕ (6-8 длинных предложений).\",\n"
-            "      \"image_query\": \"ОБЯЗАТЕЛЬНОЕ ПОЛЕ! Запрос для поиска в Википедии на русском (например: 'Пушкин Александр Сергеевич')\"\n"
+            "      \"text\": \"ОЧЕНЬ ПОДРОБНЫЙ ТЕКСТ НА РУССКОМ ЯЗЫКЕ (6-8 длинных предложений).\"\n"
             "    }\n"
             "  ]\n"
             "}\n"
@@ -257,76 +241,33 @@ async def handle_text(message: types.Message):
             theme_color = RGBColor.from_string(data.get("theme_color", "#1E3A8A").replace("#", ""))
             text_color = RGBColor.from_string(data.get("text_color", "#FFFFFF").replace("#", ""))
             
-            # Функция поиска картинки (сначала Википедия, потом генерация)
-            async def get_image_for_slide(query):
-                # 1. Пробуем Википедию
-                try:
-                    search_url = f"https://ru.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={quote(query)}&gsrlimit=1&prop=pageimages&piprop=original&format=json"
-                    async with httpx.AsyncClient() as client_img:
-                        resp = await client_img.get(search_url, timeout=10.0)
-                        if resp.status_code == 200:
-                            json_data = resp.json()
-                            pages = json_data.get("query", {}).get("pages", {})
-                            for page_id, page_data in pages.items():
-                                if "original" in page_data:
-                                    img_url = page_data["original"]["source"]
-                                    img_resp = await client_img.get(img_url, timeout=10.0)
-                                    if img_resp.status_code == 200:
-                                        img = Image.open(io.BytesIO(img_resp.content)).convert("RGB")
-                                        out = io.BytesIO()
-                                        img.save(out, format='JPEG')
-                                        return io.BytesIO(out.getvalue())
-                except Exception:
-                    pass
-                
-                # 2. Если Википедия не дала фото, генерируем через Pollinations
-                try:
-                    gen_url = f"https://image.pollinations.ai/prompt/{quote(query)}?width=800&height=600&nologo=true"
-                    async with httpx.AsyncClient() as client_img:
-                        resp = await client_img.get(gen_url, timeout=20.0)
-                        if resp.status_code == 200:
-                            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-                            out = io.BytesIO()
-                            img.save(out, format='JPEG')
-                            return io.BytesIO(out.getvalue())
-                except Exception:
-                    pass
-                
-                return None
-
-            for i, slide_data in enumerate(data.get("slides", [])):
+            for slide_data in data.get("slides", []):
                 slide = prs.slides.add_slide(prs.slide_layouts[6])
                 
+                # Фон
                 fill = slide.background.fill
                 fill.solid()
                 fill.fore_color.rgb = theme_color
-
-                image_query = slide_data.get("image_query", "")
-                if image_query:
-                    await message.answer(f"({i+1}/5) Ищу/генерирую фото: {slide_data.get('title')}...")
-                    img_data = await get_image_for_slide(image_query)
-                    if img_data:
-                        slide.shapes.add_picture(img_data, Inches(5.5), Inches(1.5), width=Inches(4.0))
                 
-                await asyncio.sleep(1.0)
-
+                # Заголовок
                 title_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.3), Inches(9), Inches(1))
                 title_frame = title_box.text_frame
                 title_frame.text = slide_data.get("title", "")
                 p = title_frame.paragraphs[0]
                 p.font.size = Pt(32)
                 p.font.bold = True
-                p.font.color.rgb = RGBColor(255, 255, 255)
+                p.font.color.rgb = text_color
                 p.font.name = 'Arial'
                 
-                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(4.8), Inches(5.5))
+                # Текст
+                text_box = slide.shapes.add_textbox(Inches(0.5), Inches(1.5), Inches(9), Inches(5.5))
                 text_frame = text_box.text_frame
                 text_frame.text = slide_data.get("text", "")
                 text_frame.word_wrap = True
                 for paragraph in text_frame.paragraphs:
-                    paragraph.font.size = Pt(14)
+                    paragraph.font.size = Pt(16)
                     paragraph.font.color.rgb = RGBColor(255, 255, 255)
-                    paragraph.space_after = Pt(8)
+                    paragraph.space_after = Pt(10)
                     paragraph.font.name = 'Arial'
 
             pptx_stream = io.BytesIO()
@@ -342,7 +283,6 @@ async def handle_text(message: types.Message):
         user_modes[message.from_user.id] = "text"
         return
 
-    # --- НАПИСАНИЕ ТЕКСТА ---
     if mode == "write":
         prompt = message.text
         if reply_to_text: prompt = f"Контекст: {reply_to_text}\n\nЗадача: {message.text}"
@@ -380,7 +320,6 @@ async def handle_text(message: types.Message):
             await message.reply(f"Ошибка при написании: {e}")
         return
 
-    # --- ВОПРОСЫ / РЕДАКТОР ---
     sys_prompt = "Ты — умный ассистент. Отвечай на русском языке." if mode == "question" else "Ты — профессиональный редактор. Сокращай текст на русском языке."
     temp = 0.5 if mode == "question" else 0.3
     user_prompt = f"Контекст:\n\"{reply_to_text}\"\n\nВопрос:\n{message.text}" if reply_to_text else message.text
@@ -394,7 +333,6 @@ async def handle_text(message: types.Message):
     except Exception as e:
         await message.reply(f"Ошибка: {e}")
 
-# --- ОБРАБОТКА ФОТО (ФИЛЬТРЫ) ---
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
     if message.reply_to_message: return
